@@ -3,8 +3,8 @@
 // Zero Build Step: Uses native ES6 Modules via CDN
 // =============================================================================
 
-// Supabase JS SDK imported via official CDN ESM bundle
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+// Supabase JS SDK imported via pre-bundled CDN ESM (Single HTTP request, Cloudflare Edge cached)
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2?bundle';
 
 /**
  * Project Configuration

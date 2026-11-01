@@ -98,14 +98,16 @@ const DOM = {
 /**
  * Entry Point: Initializes Portal on DOM Ready
  */
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
   initCredentialsModal();
   initStoredClientInfo();
-  await initVisitorCounter();
-  await loadSalonProfile();
-  await loadServices();
   initDateConstraints();
   setupEventListeners();
+
+  // Instant parallel data fetching & background non-blocking counter
+  initVisitorCounter(); // Non-blocking
+  loadSalonProfile();   // Instant cache render + background network refresh
+  loadServices();       // Instant cache render + background network refresh
 });
 
 /**
@@ -159,100 +161,144 @@ function initStoredClientInfo() {
 }
 
 /**
- * Triggers session-guarded atomic visitor count
+ * Triggers session-guarded atomic visitor count in background
  */
 async function initVisitorCounter() {
-  const updatedCount = await triggerVisitorCounter();
-  if (updatedCount !== null && DOM.viewsCount) {
-    DOM.viewsCount.textContent = Number(updatedCount).toLocaleString('ar-EG');
-  }
-}
-
-/**
- * Loads and renders salon settings & status
- */
-async function loadSalonProfile() {
   try {
-    const settings = await getSalonSettings();
-    state.salonSettings = settings;
-
-    // Render salon name
-    if (settings.salon_name && DOM.salonName) {
-      DOM.salonName.textContent = settings.salon_name;
-      document.title = `${settings.salon_name} | حجز موعد`;
-    }
-
-    // Render total views
-    if (settings.total_views && DOM.viewsCount) {
-      DOM.viewsCount.textContent = Number(settings.total_views).toLocaleString('ar-EG');
-    }
-
-    // Check operational status
-    if (settings.is_paused) {
-      DOM.pauseBanner.style.display = 'flex';
-      DOM.bookingContainer.style.display = 'none';
-      DOM.salonStatus.textContent = 'الصالون في استراحة مؤقتة 🛑';
-      DOM.salonStatus.style.color = 'var(--status-cancelled)';
-    } else {
-      DOM.pauseBanner.style.display = 'none';
-      DOM.bookingContainer.style.display = 'block';
-      DOM.salonStatus.textContent = 'مفتوح ويستقبل الحجوزات 🟢';
-      DOM.salonStatus.style.color = 'var(--status-completed)';
+    const updatedCount = await triggerVisitorCounter();
+    if (updatedCount !== null && DOM.viewsCount) {
+      DOM.viewsCount.textContent = Number(updatedCount).toLocaleString('ar-EG');
     }
   } catch (err) {
-    console.warn('Could not load salon settings:', err);
-    DOM.salonStatus.textContent = 'صالون الحلاقة متاح للحجز';
+    console.warn('Visitor counter background check:', err);
   }
 }
 
 /**
- * Loads and renders active services catalog
+ * Renders salon profile in DOM
+ */
+function renderSalonProfileDOM(settings) {
+  if (!settings) return;
+  state.salonSettings = settings;
+
+  // Render salon name
+  if (settings.salon_name && DOM.salonName) {
+    DOM.salonName.textContent = settings.salon_name;
+    document.title = `${settings.salon_name} | حجز موعد`;
+  }
+
+  // Render total views
+  if (settings.total_views && DOM.viewsCount) {
+    DOM.viewsCount.textContent = Number(settings.total_views).toLocaleString('ar-EG');
+  }
+
+  // Check operational status
+  if (settings.is_paused) {
+    DOM.pauseBanner.style.display = 'flex';
+    DOM.bookingContainer.style.display = 'none';
+    DOM.salonStatus.textContent = 'الصالون في استراحة مؤقتة 🛑';
+    DOM.salonStatus.style.color = 'var(--status-cancelled)';
+  } else {
+    DOM.pauseBanner.style.display = 'none';
+    DOM.bookingContainer.style.display = 'block';
+    DOM.salonStatus.textContent = 'مفتوح ويستقبل الحجوزات 🟢';
+    DOM.salonStatus.style.color = 'var(--status-completed)';
+  }
+}
+
+/**
+ * Loads and renders salon settings & status (SWR: Instant Cache + Fresh Network)
+ */
+async function loadSalonProfile() {
+  // 1. Instant cache render (0ms delay)
+  try {
+    const cached = localStorage.getItem('maqass_cached_salon_settings');
+    if (cached) renderSalonProfileDOM(JSON.parse(cached));
+  } catch {}
+
+  // 2. Fresh fetch from network
+  try {
+    const settings = await getSalonSettings();
+    localStorage.setItem('maqass_cached_salon_settings', JSON.stringify(settings));
+    renderSalonProfileDOM(settings);
+  } catch (err) {
+    console.warn('Could not load salon settings:', err);
+    if (!state.salonSettings) {
+      DOM.salonStatus.textContent = 'صالون الحلاقة متاح للحجز';
+    }
+  }
+}
+
+/**
+ * Renders services catalog in DOM
+ */
+function renderServicesDOM(services) {
+  if (!Array.isArray(services) || services.length === 0) return;
+  state.services = services;
+
+  DOM.servicesLoading.style.display = 'none';
+  DOM.servicesContainer.style.display = 'grid';
+  DOM.servicesContainer.innerHTML = '';
+
+  services.forEach(service => {
+    const card = document.createElement('div');
+    card.className = 'service-card';
+    card.dataset.id = service.id;
+    if (state.selectedService && state.selectedService.id === service.id) {
+      card.classList.add('selected');
+    }
+
+    card.innerHTML = `
+      <div class="service-name">${service.name}</div>
+      <div class="service-meta">
+        <span>⏱️ ${service.duration_minutes} دقيقة</span>
+        <span class="service-price">${Number(service.price).toFixed(0)} ج.م</span>
+      </div>
+    `;
+
+    card.addEventListener('click', () => selectService(service, card));
+    DOM.servicesContainer.appendChild(card);
+  });
+}
+
+/**
+ * Loads and renders active services catalog (SWR: Instant Cache + Fresh Network)
  */
 async function loadServices() {
-  DOM.servicesLoading.style.display = 'block';
-  DOM.servicesContainer.style.display = 'none';
+  // 1. Instant cache render (0ms delay)
+  try {
+    const cached = localStorage.getItem('maqass_cached_services');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed.length > 0) renderServicesDOM(parsed);
+    }
+  } catch {}
 
+  // 2. Fresh fetch from network
   try {
     const services = await getActiveServices();
-    state.services = services;
-
-    DOM.servicesLoading.style.display = 'none';
-    DOM.servicesContainer.style.display = 'grid';
+    localStorage.setItem('maqass_cached_services', JSON.stringify(services));
+    renderServicesDOM(services);
 
     if (services.length === 0) {
+      DOM.servicesLoading.style.display = 'none';
+      DOM.servicesContainer.style.display = 'block';
       DOM.servicesContainer.innerHTML = `
         <div class="empty-state" style="grid-column: 1 / -1;">
           <p>لا توجد خدمات متاحة حالياً.</p>
         </div>
       `;
-      return;
     }
-
-    DOM.servicesContainer.innerHTML = '';
-    services.forEach(service => {
-      const card = document.createElement('div');
-      card.className = 'service-card';
-      card.dataset.id = service.id;
-
-      card.innerHTML = `
-        <div class="service-name">${service.name}</div>
-        <div class="service-meta">
-          <span>⏱️ ${service.duration_minutes} دقيقة</span>
-          <span class="service-price">${Number(service.price).toFixed(0)} ج.م</span>
-        </div>
-      `;
-
-      card.addEventListener('click', () => selectService(service, card));
-      DOM.servicesContainer.appendChild(card);
-    });
   } catch (err) {
     DOM.servicesLoading.style.display = 'none';
-    DOM.servicesContainer.style.display = 'block';
-    DOM.servicesContainer.innerHTML = `
-      <div class="empty-state">
-        <p style="color: #ef4444;">${err.message}</p>
-      </div>
-    `;
+    if (!state.services || state.services.length === 0) {
+      DOM.servicesContainer.style.display = 'block';
+      DOM.servicesContainer.innerHTML = `
+        <div class="empty-state">
+          <p style="color: #ef4444;">${err.message}</p>
+        </div>
+      `;
+    }
   }
 }
 
