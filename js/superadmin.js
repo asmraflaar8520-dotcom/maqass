@@ -4,10 +4,12 @@
 // =============================================================================
 
 import {
+  loginSuperAdmin,
+  getSuperAdminSession,
+  signOutSuperAdmin,
   getSuperAdminOverview,
   toggleSalonSuspension,
-  getSalonAppointmentsAdmin,
-  SUPER_ADMIN_STORAGE_KEY
+  getSalonAppointmentsAdmin
 } from './api.js';
 import {
   showToast,
@@ -17,7 +19,6 @@ import {
 
 // Super Admin State
 const state = {
-  masterKey: '',
   salons: [],
   metrics: null,
   currentFilter: 'all',
@@ -29,7 +30,8 @@ const DOM = {
   superGate: document.getElementById('super-gate'),
   superWrapper: document.getElementById('super-wrapper'),
   superAuthForm: document.getElementById('super-auth-form'),
-  superPasscode: document.getElementById('super-passcode'),
+  superEmail: document.getElementById('super-email'),
+  superPassword: document.getElementById('super-password'),
   superErrorAlert: document.getElementById('super-error-alert'),
   superErrorText: document.getElementById('super-error-text'),
   btnSuperLogin: document.getElementById('btn-super-login'),
@@ -69,18 +71,17 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Checks session authentication
+ * Checks session authentication via Supabase Auth
  */
-function checkAuthAndBoot() {
-  const cachedKey = sessionStorage.getItem(SUPER_ADMIN_STORAGE_KEY);
-  if (cachedKey) {
-    state.masterKey = cachedKey;
+async function checkAuthAndBoot() {
+  const hasSession = await getSuperAdminSession();
+  if (hasSession) {
     unlockHub();
-    loadDashboardData();
+    await loadDashboardData();
   } else {
     DOM.superGate.style.display = 'flex';
     DOM.superWrapper.style.display = 'none';
-    if (DOM.superPasscode) DOM.superPasscode.focus();
+    if (DOM.superEmail) DOM.superEmail.focus();
   }
 }
 
@@ -99,29 +100,29 @@ function setupEventListeners() {
   // Login Form
   DOM.superAuthForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const key = DOM.superPasscode.value.trim();
-    if (!key) return;
+    const email = DOM.superEmail.value.trim();
+    const password = DOM.superPassword.value;
+    if (!email || !password) return;
 
     DOM.btnSuperLogin.disabled = true;
-    DOM.btnSuperLogin.innerHTML = 'جاري التحقق وفك التشفير... ⏳';
+    DOM.btnSuperLogin.innerHTML = 'جاري التحقق والاتصال الآمن... ⏳';
     if (DOM.superErrorAlert) DOM.superErrorAlert.style.display = 'none';
 
     try {
-      state.masterKey = key;
-      await loadDashboardData();
-      sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, key);
+      await loginSuperAdmin({ email, password });
       unlockHub();
+      await loadDashboardData();
       showToast('مرحباً بك يا مالك المنصة! تم الدخول بنجاح 👑', 'success');
     } catch (err) {
       if (DOM.superErrorAlert && DOM.superErrorText) {
-        DOM.superErrorText.textContent = err.message || 'رمز المرور غير صحيح.';
+        DOM.superErrorText.textContent = err.message || 'بيانات الدخول غير صحيحة.';
         DOM.superErrorAlert.style.display = 'flex';
       }
       showToast(err.message, 'error');
-      DOM.superPasscode.focus();
+      DOM.superPassword.focus();
     } finally {
       DOM.btnSuperLogin.disabled = false;
-      DOM.btnSuperLogin.innerHTML = 'فتح لوحة التحكم المركزية 🔐';
+      DOM.btnSuperLogin.innerHTML = 'دخول آمن للوحة المالك 🔐';
     }
   });
 
@@ -136,9 +137,9 @@ function setupEventListeners() {
   });
 
   // Logout
-  DOM.btnSuperLogout.addEventListener('click', () => {
+  DOM.btnSuperLogout.addEventListener('click', async () => {
     if (confirm('هل تريد تسجيل الخروج وقفل لوحة التحكم؟')) {
-      sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
+      await signOutSuperAdmin();
       window.location.reload();
     }
   });
@@ -176,7 +177,7 @@ function setupEventListeners() {
  */
 async function loadDashboardData() {
   try {
-    const data = await getSuperAdminOverview(state.masterKey);
+    const data = await getSuperAdminOverview();
     state.salons = data.salons || [];
     state.metrics = data.metrics || {};
 
@@ -364,7 +365,6 @@ async function handleToggleLock(salonId, salonName, shouldSuspend) {
   try {
     showToast('جاري تحديث حالة القفل في قاعدة البيانات... ⏳', 'info');
     await toggleSalonSuspension({
-      masterKey: state.masterKey,
       salonId,
       suspend: shouldSuspend,
       reason

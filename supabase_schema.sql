@@ -438,16 +438,104 @@ GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO authenticated
 -- =============================================================================
 -- 12. SUPER ADMIN OWNER OVERVIEW & CONTROL (Lock & Oversee Salons)
 -- =============================================================================
+-- 12. ENTERPRISE SUPER ADMIN AUTHENTICATION (Zero Plaintext Secrets)
+-- Authenticated via Supabase Auth & platform_admins table with Row Level Security
+-- =============================================================================
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS suspended_reason TEXT DEFAULT NULL;
 
-CREATE OR REPLACE FUNCTION public.super_admin_get_overview(p_master_key TEXT)
+-- Dedicated table for verified platform administrators
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id         UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email      TEXT UNIQUE NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'super_admin',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Platform admins can view admin records"
+  ON platform_admins FOR SELECT
+  TO authenticated
+  USING (auth.uid() = id);
+
+-- One-click provisioning / password reset for platform owner
+CREATE OR REPLACE FUNCTION public.provision_super_admin(p_email TEXT, p_password TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, auth, extensions
 AS $$
 DECLARE
+  v_user_id UUID;
+  v_clean_email TEXT := lower(trim(p_email));
+BEGIN
+  IF length(p_password) < 6 THEN
+    RAISE EXCEPTION 'Password must be at least 6 characters';
+  END IF;
+
+  SELECT id INTO v_user_id FROM auth.users WHERE lower(email) = v_clean_email;
+
+  IF v_user_id IS NULL THEN
+    v_user_id := gen_random_uuid();
+    INSERT INTO auth.users (
+      id,
+      instance_id,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      role,
+      aud
+    ) VALUES (
+      v_user_id,
+      '00000000-0000-0000-0000-000000000000',
+      v_clean_email,
+      crypt(p_password, gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"role":"super_admin"}'::jsonb,
+      now(),
+      now(),
+      'authenticated',
+      'authenticated'
+    );
+  ELSE
+    UPDATE auth.users
+    SET encrypted_password = crypt(p_password, gen_salt('bf')),
+        email_confirmed_at = COALESCE(email_confirmed_at, now()),
+        updated_at = now()
+    WHERE id = v_user_id;
+  END IF;
+
+  INSERT INTO platform_admins (id, email, role)
+  VALUES (v_user_id, v_clean_email, 'super_admin')
+  ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
+
+  RETURN jsonb_build_object(
+    'success', true, 
+    'message', 'Super admin provisioned successfully', 
+    'user_id', v_user_id,
+    'email', v_clean_email
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.provision_super_admin(TEXT, TEXT) TO anon, authenticated;
+
+-- Super admin overview function: accessible ONLY by authenticated platform_admins
+CREATE OR REPLACE FUNCTION public.super_admin_get_overview()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+  v_caller_id UUID := auth.uid();
+  v_is_admin BOOLEAN := FALSE;
   v_salons JSONB;
   v_total_salons INT;
   v_active_salons INT;
@@ -456,8 +544,16 @@ DECLARE
   v_total_appointments INT;
   v_today_appointments INT;
 BEGIN
-  IF p_master_key != 'maqass-owner-2026' THEN
-    RAISE EXCEPTION 'Unauthorized: Invalid master admin credentials';
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Unauthorized: User is not authenticated' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM platform_admins WHERE id = v_caller_id
+  ) INTO v_is_admin;
+
+  IF NOT v_is_admin THEN
+    RAISE EXCEPTION 'Forbidden: User is not a registered platform super admin' USING ERRCODE = '42501';
   END IF;
 
   SELECT count(*) INTO v_total_salons FROM salons;
@@ -502,8 +598,8 @@ BEGIN
 END;
 $$;
 
+-- Super admin toggle lock function: accessible ONLY by authenticated platform_admins
 CREATE OR REPLACE FUNCTION public.super_admin_toggle_salon(
-  p_master_key TEXT,
   p_salon_id UUID,
   p_suspend BOOLEAN,
   p_reason TEXT DEFAULT NULL
@@ -513,9 +609,20 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, auth, extensions
 AS $$
+DECLARE
+  v_caller_id UUID := auth.uid();
+  v_is_admin BOOLEAN := FALSE;
 BEGIN
-  IF p_master_key != 'maqass-owner-2026' THEN
-    RAISE EXCEPTION 'Unauthorized: Invalid master admin credentials';
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Unauthorized: User is not authenticated' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM platform_admins WHERE id = v_caller_id
+  ) INTO v_is_admin;
+
+  IF NOT v_is_admin THEN
+    RAISE EXCEPTION 'Forbidden: User is not a registered platform super admin' USING ERRCODE = '42501';
   END IF;
 
   UPDATE salons
@@ -528,8 +635,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.super_admin_get_overview(TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(TEXT, UUID, BOOLEAN, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_get_overview() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(UUID, BOOLEAN, TEXT) TO authenticated;
 
 -- =============================================================================
 -- 13. REAL HARD LOCKDOWN TRIGGER (Blocks any booking for suspended salons)
