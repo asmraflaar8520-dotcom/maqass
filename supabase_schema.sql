@@ -456,8 +456,9 @@ CREATE TABLE IF NOT EXISTS platform_admins (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Ensure table is independent and has password_hash column
+-- Ensure table is independent and has password_hash and default UUID id
 ALTER TABLE platform_admins DROP CONSTRAINT IF EXISTS platform_admins_id_fkey;
+ALTER TABLE platform_admins ALTER COLUMN id SET DEFAULT gen_random_uuid();
 
 DO $$
 BEGIN
@@ -494,8 +495,8 @@ BEGIN
 
   -- 1. Auto First-Time Setup: If no admin exists yet, register this first user as the platform owner!
   IF v_admin_count = 0 THEN
-    INSERT INTO platform_admins (email, password_hash)
-    VALUES (v_clean_email, crypt(p_password, gen_salt('bf')))
+    INSERT INTO platform_admins (id, email, password_hash)
+    VALUES (gen_random_uuid(), v_clean_email, crypt(p_password, gen_salt('bf')))
     RETURNING id INTO v_token;
 
     RETURN jsonb_build_object(
