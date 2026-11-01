@@ -142,28 +142,19 @@ export async function getSalonSettings(identifier = null) {
     return getDemoStore().salon_settings;
   }
 
+  // In multi-tenant architecture, if no specific salon is requested, return null
+  // (prevents clients from accidentally booking with a random stranger's salon)
+  if (!identifier) {
+    return null;
+  }
+
   try {
     let q = supabase.from('salons').select('*');
 
-    if (identifier) {
-      if (identifier.length === 36 && identifier.includes('-')) {
-        q = q.eq('id', identifier);
-      } else {
-        q = q.eq('slug', identifier);
-      }
+    if (identifier.length === 36 && identifier.includes('-')) {
+      q = q.eq('id', identifier);
     } else {
-      // Check localStorage cached salon ID or session
-      const cachedId = localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
-      const cachedSlug = localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG);
-      
-      if (cachedId) {
-        q = q.eq('id', cachedId);
-      } else if (cachedSlug) {
-        q = q.eq('slug', cachedSlug);
-      } else {
-        // Fallback to default/main or first salon
-        q = q.eq('slug', 'main');
-      }
+      q = q.eq('slug', identifier.trim());
     }
 
     const { data, error } = await q.maybeSingle();
@@ -172,17 +163,10 @@ export async function getSalonSettings(identifier = null) {
       return data;
     }
 
-    // Fallback: fetch first available salon or legacy salon_settings table
-    const { data: firstSalon } = await supabase.from('salons').select('*').limit(1).maybeSingle();
-    if (firstSalon) return firstSalon;
-
-    const { data: legacy } = await supabase.from('salon_settings').select('*').eq('id', 1).maybeSingle();
-    if (legacy) return legacy;
-
-    return getDemoStore().salon_settings;
+    return null;
   } catch (err) {
-    console.warn('getSalonSettings fallback:', err);
-    return getDemoStore().salon_settings;
+    console.warn('getSalonSettings error:', err);
+    return null;
   }
 }
 

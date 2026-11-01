@@ -52,6 +52,10 @@ const DOM = {
   pauseBanner: document.getElementById('pause-banner'),
   suspendedBanner: document.getElementById('suspended-banner'),
   suspendedDesc: document.getElementById('suspended-desc'),
+  platformGateway: document.getElementById('platform-gateway-screen'),
+  salonNotFound: document.getElementById('salon-not-found-screen'),
+  inputGatewaySlug: document.getElementById('input-gateway-slug'),
+  btnGatewayGo: document.getElementById('btn-gateway-go'),
   bookingContainer: document.getElementById('booking-container'),
   setupModal: document.getElementById('setup-modal'),
   btnSaveSetup: document.getElementById('btn-save-setup'),
@@ -239,23 +243,54 @@ function renderSalonProfileDOM(settings) {
 
 /**
  * Loads and renders salon settings & status (SWR: Instant Cache + Fresh Network)
+ * Enforces strict multi-tenancy: clients only see the specific salon they visited
  */
 async function loadSalonProfile() {
-  const cacheKey = `maqass_cached_salon_${state.salonSlug || 'main'}`;
+  // 1. If NO salon slug was specified in URL: show Platform Gateway
+  if (!state.salonSlug) {
+    if (DOM.platformGateway) DOM.platformGateway.style.display = 'block';
+    if (DOM.bookingContainer) DOM.bookingContainer.style.display = 'none';
+    if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'none';
+    if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
+    if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'none';
+    if (DOM.salonName) DOM.salonName.textContent = 'منصة مِقَصْ';
+    if (DOM.salonStatus) DOM.salonStatus.textContent = 'منظومة حجز صالونات الحلاقة 💈';
+    initGatewayLookup();
+    return;
+  }
 
-  // 1. Instant cache render (0ms delay)
+  // 2. Slug was provided: strictly fetch that salon
+  const cacheKey = `maqass_cached_salon_${state.salonSlug}`;
+
+  // Instant cache render
   try {
     const cached = localStorage.getItem(cacheKey);
     if (cached) renderSalonProfileDOM(JSON.parse(cached));
   } catch {}
 
-  // 2. Fresh fetch from network
+  // Fresh fetch from network
   try {
     const settings = await getSalonSettings(state.salonSlug);
+
+    if (!settings) {
+      // Salon not found by that slug!
+      if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'block';
+      if (DOM.bookingContainer) DOM.bookingContainer.style.display = 'none';
+      if (DOM.platformGateway) DOM.platformGateway.style.display = 'none';
+      if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
+      if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'none';
+      if (DOM.salonName) DOM.salonName.textContent = 'صالون غير مسجل';
+      if (DOM.salonStatus) DOM.salonStatus.textContent = 'الرابط غير صحيح أو منتهي ⚠️';
+      return;
+    }
+
+    if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'none';
+    if (DOM.platformGateway) DOM.platformGateway.style.display = 'none';
+
     localStorage.setItem(cacheKey, JSON.stringify(settings));
     renderSalonProfileDOM(settings);
 
-    // Fetch active barbers for this salon
+    // Fetch active barbers for this specific salon
     if (settings && settings.id) {
       const barbers = await getBarbers(settings.id);
       state.barbers = barbers;
@@ -263,10 +298,26 @@ async function loadSalonProfile() {
     }
   } catch (err) {
     console.warn('Could not load salon settings:', err);
-    if (!state.salonSettings) {
-      DOM.salonStatus.textContent = 'صالون الحلاقة متاح للحجز';
-    }
   }
+}
+
+/**
+ * Handles salon lookup from the platform gateway
+ */
+function initGatewayLookup() {
+  if (!DOM.btnGatewayGo || !DOM.inputGatewaySlug) return;
+  const navigate = () => {
+    const raw = DOM.inputGatewaySlug.value.trim();
+    if (!raw) return;
+    const slug = raw.replace(/^.*[?&]s=/, '').replace(/^\//, '');
+    if (slug) {
+      window.location.search = `?s=${encodeURIComponent(slug)}`;
+    }
+  };
+  DOM.btnGatewayGo.addEventListener('click', navigate);
+  DOM.inputGatewaySlug.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') navigate();
+  });
 }
 
 /**

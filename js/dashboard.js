@@ -444,9 +444,31 @@ async function loadSalonHeaderAndSettings() {
     if (settings.salon_name) DOM.dashSalonName.textContent = settings.salon_name;
     if (settings.total_views) DOM.dashViewsCount.textContent = Number(settings.total_views).toLocaleString('ar-EG');
 
-    // Update Public Client Link
-    if (DOM.btnViewClientPage && settings.slug) {
-      DOM.btnViewClientPage.href = `index.html?s=${settings.slug}`;
+    // Update Public Client Link and Sharing
+    if (settings.slug) {
+      const origin = window.location.origin;
+      const basePath = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+      const fullClientUrl = `${origin}${basePath}index.html?s=${settings.slug}`;
+
+      if (DOM.btnViewClientPage) {
+        DOM.btnViewClientPage.href = fullClientUrl;
+      }
+
+      if (DOM.btnCopySalonLink) {
+        DOM.btnCopySalonLink.onclick = () => {
+          navigator.clipboard.writeText(fullClientUrl).then(() => {
+            showToast('تم نسخ رابط صالونك بنجاح! شاركه مع زبائنك ✂️', 'success');
+          }).catch(() => {
+            prompt('انسخ رابط الحجز المباشر لصالونك:', fullClientUrl);
+          });
+        };
+      }
+
+      const btnShareWa = document.getElementById('btn-share-whatsapp');
+      if (btnShareWa) {
+        const waText = encodeURIComponent(`احجز دورك الآن في ${settings.salon_name || 'صالون الحلاقة'} أونلاين بدون انتظار في الطابور عبر الرابط:\n${fullClientUrl} ✂️💈`);
+        btnShareWa.href = `https://wa.me/?text=${waText}`;
+      }
     }
 
     // Check Super Admin Suspension
