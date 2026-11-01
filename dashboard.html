@@ -2,8 +2,8 @@
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0e14">
   <meta name="description" content="مِقَصْ — لوحة تحكم الحلاق وإدارة طابور الانتظار">
   <title>مِقَصْ | لوحة تحكم الصالون</title>
 
@@ -16,7 +16,7 @@
   <!-- Optimized Font Loading & Stylesheet -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Tajawal:wght@400;500;700;800&display=swap">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -152,45 +152,49 @@
     </div>
 
     <!-- Top Bar with Salon Profile & Quick Stats -->
-    <header class="brand-header">
-      <div class="brand-info">
-        <div class="brand-icon">💈</div>
-        <div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <h1 class="brand-title" id="dash-salon-name">صالون مِقَصْ</h1>
-            <span class="badge badge-in-progress" id="sync-indicator">
-              <span class="views-pulse" style="background: #3b82f6; box-shadow: 0 0 8px #3b82f6;"></span>
-              <span>محدث لحظياً</span>
-            </span>
+    <!-- Top Bar with Salon Profile & Quick Stats -->
+    <header class="brand-header" style="flex-direction: column; align-items: stretch; gap: 12px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+        <div class="brand-info">
+          <div class="brand-icon">💈</div>
+          <div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <h1 class="brand-title" id="dash-salon-name">صالون مِقَصْ</h1>
+              <span class="badge badge-in-progress" id="sync-indicator">
+                <span class="views-pulse" style="background: #3b82f6; box-shadow: 0 0 8px #3b82f6;"></span>
+                <span>محدث لحظياً</span>
+              </span>
+            </div>
+            <p class="brand-tagline">لوحة التحكم السريعة والعمليات الفورية</p>
           </div>
-          <p class="brand-tagline">لوحة التحكم السريعة والعمليات الفورية</p>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="views-badge" title="إجمالي الزيارات">
+            <span class="views-pulse"></span>
+            <span id="dash-views-count">0</span>
+            <span>زيارة</span>
+          </div>
+
+          <button id="btn-logout" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto; color: #ef4444; min-height: 36px;" title="تسجيل الخروج">
+            خروج 🚪
+          </button>
         </div>
       </div>
 
-      <!-- Action items -->
-      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <div class="views-badge" title="إجمالي الزيارات">
-          <span class="views-pulse"></span>
-          <span id="dash-views-count">0</span>
-          <span>زيارة</span>
-        </div>
-
-        <!-- 1-Tap Copy Salon Link -->
-        <button id="btn-copy-salon-link" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto; color: var(--gold-primary); border-color: rgba(212, 175, 55, 0.4); font-weight: 700;" title="نسخ رابط حجز الزبائن الخاص بصالونك">
-          📋 نسخ رابط صالوني للزبائن
+      <!-- Quick Salon Link Sharing Bar (Horizontal Touch Bar) -->
+      <div style="display: flex; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-top: 6px; border-top: 1px solid var(--border-color);">
+        <button id="btn-copy-salon-link" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem; width: auto; color: var(--gold-primary); border-color: rgba(212, 175, 55, 0.4); font-weight: 700; white-space: nowrap; min-height: 38px;" title="نسخ رابط حجز الزبائن الخاص بصالونك">
+          📋 نسخ رابط صالوني
         </button>
 
-        <a id="btn-share-whatsapp" href="#" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto; color: #34d399; text-decoration: none;" title="مشاركة الرابط على واتساب" target="_blank">
-          📲 إرسال على واتساب
+        <a id="btn-share-whatsapp" href="#" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem; width: auto; color: #34d399; text-decoration: none; white-space: nowrap; min-height: 38px;" title="مشاركة الرابط على واتساب" target="_blank">
+          📲 إرسال واتساب
         </a>
 
-        <a id="btn-view-client-page" href="index.html" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto;" title="معاينة صفحة حجز صالوني" target="_blank">
-          👁️ معاينة صفحة الحجز
+        <a id="btn-view-client-page" href="index.html" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem; width: auto; white-space: nowrap; min-height: 38px;" title="معاينة صفحة حجز صالوني" target="_blank">
+          👁️ معاينة الحجز
         </a>
-
-        <button id="btn-logout" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto; color: #ef4444;" title="تسجيل الخروج">
-          خروج 🚪
-        </button>
       </div>
     </header>
 

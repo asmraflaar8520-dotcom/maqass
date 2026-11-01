@@ -536,6 +536,73 @@ function initDateConstraints() {
 
   state.selectedDate = todayEgyptStr;
   updateDateLabel(todayEgyptStr);
+  renderDateChipsCarousel();
+}
+
+/**
+ * Renders Mobile-Friendly Horizontal Swipeable Date Chips (Up to 7 Days Ahead)
+ */
+function renderDateChipsCarousel() {
+  const container = document.getElementById('date-chips-carousel');
+  if (!container) return;
+
+  container.innerHTML = '';
+  const now = new Date();
+
+  for (let i = 0; i <= CONFIG.MAX_DAYS_IN_ADVANCE; i++) {
+    const d = new Date(now);
+    d.setDate(now.getDate() + i);
+    const dateStr = getEgyptLocalDate(d);
+
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `date-chip ${state.selectedDate === dateStr ? 'active' : ''}`;
+    chip.dataset.date = dateStr;
+
+    let dayTitle = '';
+    if (i === 0) dayTitle = 'اليوم';
+    else if (i === 1) dayTitle = 'غداً';
+    else if (i === 2) dayTitle = 'بعد غد';
+    else {
+      const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+      dayTitle = days[d.getDay()];
+    }
+
+    const dayNum = d.getDate();
+    const months = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+    const monthName = months[d.getMonth()];
+
+    chip.innerHTML = `
+      <span class="date-chip-day">${dayTitle}</span>
+      <span class="date-chip-num">${dayNum} ${monthName}</span>
+    `;
+
+    chip.addEventListener('click', async () => {
+      state.selectedDate = dateStr;
+      DOM.bookingDate.value = dateStr;
+      updateActiveDateChip(dateStr);
+      updateDateLabel(dateStr);
+      await loadAvailableTimeSlots();
+    });
+
+    container.appendChild(chip);
+  }
+}
+
+/**
+ * Synchronizes Active State on Carousel Chips
+ */
+function updateActiveDateChip(dateStr) {
+  const container = document.getElementById('date-chips-carousel');
+  if (!container) return;
+  container.querySelectorAll('.date-chip').forEach(chip => {
+    if (chip.dataset.date === dateStr) {
+      chip.classList.add('active');
+      chip.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    } else {
+      chip.classList.remove('active');
+    }
+  });
 }
 
 /**
@@ -813,6 +880,7 @@ function setupEventListeners() {
   DOM.bookingDate.addEventListener('change', async (e) => {
     state.selectedDate = e.target.value;
     updateDateLabel(state.selectedDate);
+    updateActiveDateChip(state.selectedDate);
     await loadAvailableTimeSlots();
   });
 
