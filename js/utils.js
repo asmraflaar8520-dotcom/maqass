@@ -273,7 +273,7 @@ export function generateWhatsAppLink({
 
     case 'inquiry':
     default:
-      message = `السلام عليكم يا كابتن، بخصوص الحجز في ${salonName}...`;
+      message = `السلام عليكم، بخصوص الحجز في ${salonName}...`;
       break;
   }
 
