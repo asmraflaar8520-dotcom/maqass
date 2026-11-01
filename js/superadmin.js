@@ -10,7 +10,7 @@ import {
   getSuperAdminOverview,
   toggleSalonSuspension,
   getSalonAppointmentsAdmin
-} from './api.js';
+} from './api.js?v=3.0.0';
 import {
   showToast,
   formatTime12H,
