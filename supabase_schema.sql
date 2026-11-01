@@ -25,10 +25,12 @@ CREATE TABLE IF NOT EXISTS salons (
     "5": { "day_ar": "الجمعة",    "open": "13:30", "close": "23:59", "is_off": false },
     "6": { "day_ar": "السبت",    "open": "11:00", "close": "23:00", "is_off": false }
   }'::jsonb,
-  is_paused     BOOLEAN NOT NULL DEFAULT FALSE,
-  total_views   BIGINT NOT NULL DEFAULT 0,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  is_paused        BOOLEAN NOT NULL DEFAULT FALSE,
+  is_suspended     BOOLEAN NOT NULL DEFAULT FALSE,
+  suspended_reason TEXT DEFAULT NULL,
+  total_views      BIGINT NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_salons_owner ON salons(owner_id);
@@ -528,4 +530,29 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.super_admin_get_overview(TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(TEXT, UUID, BOOLEAN, TEXT) TO anon, authenticated;
+
+-- =============================================================================
+-- 13. REAL HARD LOCKDOWN TRIGGER (Blocks any booking for suspended salons)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION public.check_salon_not_suspended()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.salon_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM salons 
+    WHERE id = NEW.salon_id 
+      AND is_suspended = TRUE
+  ) THEN
+    RAISE EXCEPTION 'هذا الصالون متوقف حالياً بقرار من إدارة المنصة ولا يقبل أي حجوزات جديدة'
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_check_salon_suspended ON appointments;
+CREATE TRIGGER trg_check_salon_suspended
+BEFORE INSERT ON appointments
+FOR EACH ROW
+EXECUTE FUNCTION public.check_salon_not_suspended();
+
 

@@ -471,22 +471,12 @@ async function loadSalonHeaderAndSettings() {
       }
     }
 
-    // Check Super Admin Suspension
-    const suspAlert = document.getElementById('salon-suspended-alert');
-    const suspReason = document.getElementById('salon-suspended-reason');
-    if (settings.is_suspended) {
-      if (suspAlert) {
-        suspAlert.style.display = 'flex';
-        if (suspReason && settings.suspended_reason) {
-          suspReason.textContent = `السبب: ${settings.suspended_reason} — يرجى التواصل مع إدارة منصة مِقَصْ لتسوية وتفعيل الحساب.`;
-        }
-      }
-      if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = true;
-      if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = true;
-    } else if (suspAlert) {
-      suspAlert.style.display = 'none';
-      if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = false;
-      if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = false;
+    // Apply Lock / Unlock UI state
+    applySuspensionState(settings);
+
+    // Subscribe to realtime status updates on this salon
+    if (settings.id) {
+      setupSalonStatusSubscription(settings.id);
     }
 
     // Update Pause Toggle Button UI
@@ -499,6 +489,91 @@ async function loadSalonHeaderAndSettings() {
 
   } catch (err) {
     console.warn('Could not load salon settings:', err);
+  }
+}
+
+/**
+ * Applies lockdown or unlock UI state across the dashboard
+ */
+function applySuspensionState(settings) {
+  const suspAlert = document.getElementById('salon-suspended-alert');
+  const suspReason = document.getElementById('salon-suspended-reason');
+  const isSuspended = !!settings.is_suspended;
+
+  // Header lock badge
+  let lockBadge = document.getElementById('dash-lock-badge');
+  if (isSuspended) {
+    if (!lockBadge && DOM.salonName) {
+      lockBadge = document.createElement('span');
+      lockBadge.id = 'dash-lock-badge';
+      lockBadge.className = 'badge';
+      lockBadge.style.cssText = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #ef4444; margin-right: 8px; font-size: 0.8rem;';
+      lockBadge.textContent = 'حساب مقفل بقرار الإدارة 🔒';
+      DOM.salonName.parentNode.appendChild(lockBadge);
+    }
+    if (suspAlert) {
+      suspAlert.style.display = 'flex';
+      if (suspReason && settings.suspended_reason) {
+        suspReason.textContent = `السبب: ${settings.suspended_reason} — يرجى التواصل مع إدارة منصة مِقَصْ لتسوية وتفعيل الحساب.`;
+      }
+    }
+    // Hard Lock Controls
+    if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = true;
+    if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = true;
+    if (DOM.btnSaveSalonSettings) DOM.btnSaveSalonSettings.disabled = true;
+    if (DOM.settingSalonName) DOM.settingSalonName.disabled = true;
+    if (DOM.settingSalonPhone) DOM.settingSalonPhone.disabled = true;
+    if (DOM.btnOpenAddServiceModal) DOM.btnOpenAddServiceModal.disabled = true;
+  } else {
+    // Restore all controls
+    if (lockBadge) lockBadge.remove();
+    if (suspAlert) suspAlert.style.display = 'none';
+    if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = false;
+    if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = false;
+    if (DOM.btnSaveSalonSettings) DOM.btnSaveSalonSettings.disabled = false;
+    if (DOM.settingSalonName) DOM.settingSalonName.disabled = false;
+    if (DOM.settingSalonPhone) DOM.settingSalonPhone.disabled = false;
+    if (DOM.btnOpenAddServiceModal) DOM.btnOpenAddServiceModal.disabled = false;
+  }
+}
+
+/**
+ * Listens to Realtime changes on salon status for immediate lock/unlock response
+ */
+let salonRealtimeSub = null;
+function setupSalonStatusSubscription(salonId) {
+  if (!salonId || isDemoMode() || typeof supabase === 'undefined' || !supabase.channel) return;
+  if (salonRealtimeSub) {
+    supabase.removeChannel(salonRealtimeSub);
+    salonRealtimeSub = null;
+  }
+  try {
+    salonRealtimeSub = supabase
+      .channel(`salon-status-sub-${salonId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'salons',
+          filter: `id=eq.${salonId}`
+        },
+        (payload) => {
+          if (payload.new) {
+            state.salonSettings = { ...state.salonSettings, ...payload.new };
+            applySuspensionState(payload.new);
+            updatePauseButtonUI(payload.new.is_paused);
+            if (payload.new.is_suspended) {
+              showToast('تنبيه هام: تم تجميد وقفل حساب الصالون بقرار إدارة المنصة 🔒', 'error', 8000);
+            } else {
+              showToast('تم فك القفل وإعادة تنشيط حساب الصالون بنجاح، عادت كافة الخدمات للعمل 🟢', 'success', 6000);
+            }
+          }
+        }
+      )
+      .subscribe();
+  } catch (err) {
+    console.warn('Salon status subscription warning:', err);
   }
 }
 

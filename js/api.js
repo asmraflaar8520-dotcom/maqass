@@ -354,6 +354,12 @@ export async function createAppointment(payload) {
 
   if (isDemoMode()) {
     const store = getDemoStore();
+    if (store.salon_settings?.is_suspended) {
+      throw new BookingError(
+        store.salon_settings.suspended_reason || 'عذراً، هذا الصالون متوقف ومغلق حالياً بقرار من إدارة المنصة 🔒',
+        'SALON_SUSPENDED'
+      );
+    }
     const startMins = timeToMinutes(startTime);
     const endMins = timeToMinutes(endTime);
 
@@ -399,6 +405,28 @@ export async function createAppointment(payload) {
     return newApp;
   }
 
+  // Multi-tenant Hard Kill-switch: Block booking if salon is suspended
+  if (payload.salon_id) {
+    try {
+      const { data: salonCheck } = await supabase
+        .from('salons')
+        .select('is_suspended, suspended_reason')
+        .eq('id', payload.salon_id)
+        .maybeSingle();
+
+      if (salonCheck?.is_suspended) {
+        throw new BookingError(
+          salonCheck.suspended_reason 
+            ? `عذراً، هذا الصالون متوقف حالياً: ${salonCheck.suspended_reason}` 
+            : 'عذراً، هذا الصالون متوقف ومغلق حالياً بقرار من إدارة المنصة 🔒',
+          'SALON_SUSPENDED'
+        );
+      }
+    } catch (checkErr) {
+      if (checkErr instanceof BookingError) throw checkErr;
+    }
+  }
+
   const insertData = {
     salon_id: payload.salon_id || null,
     barber_id: (payload.barber_id && payload.barber_id !== 'any') ? payload.barber_id : null,
@@ -434,6 +462,14 @@ export async function createAppointment(payload) {
       .single();
 
     if (error) {
+      if (
+        error.code === 'P0001' || 
+        error.message?.includes('متوقف') || 
+        error.message?.includes('إدارة المنصة')
+      ) {
+        throw new BookingError('عذراً، هذا الصالون متوقف ومغلق حالياً بقرار من إدارة المنصة 🔒', 'SALON_SUSPENDED');
+      }
+
       if (
         error.code === '23P01' || 
         error.message?.includes('no_double_booking') ||
@@ -904,6 +940,9 @@ export async function toggleSalonPause(isPaused, salonId = null) {
 
   if (isDemoMode()) {
     const store = getDemoStore();
+    if (store.salon_settings?.is_suspended) {
+      throw new BookingError('لا يمكن تغيير حالة الصالون: الحساب معلق ومقفل من إدارة المنصة 🔒');
+    }
     store.salon_settings.is_paused = isPaused;
     saveDemoStore(store);
     return isPaused;
@@ -911,6 +950,16 @@ export async function toggleSalonPause(isPaused, salonId = null) {
 
   try {
     if (targetSalonId) {
+      const { data: salon } = await supabase
+        .from('salons')
+        .select('is_suspended')
+        .eq('id', targetSalonId)
+        .maybeSingle();
+
+      if (salon?.is_suspended) {
+        throw new BookingError('لا يمكن تغيير حالة الصالون: الحساب معلق ومقفل من إدارة المنصة 🔒');
+      }
+
       const { error } = await supabase
         .from('salons')
         .update({ is_paused: isPaused, updated_at: new Date().toISOString() })
@@ -1108,6 +1157,33 @@ async function handleNoShowBlacklist(rawPhone) {
  */
 export async function addWalkInAppointment(serviceId, force = false, salonId = null, barberId = null) {
   const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
+  // Hard Killswitch: verify salon is not suspended
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    if (store.salon_settings?.is_suspended) {
+      throw new BookingError(
+        store.salon_settings.suspended_reason || 'لا يمكن تسجيل زبائن: تم تعليق وقفل حساب هذا الصالون من قِبل إدارة المنصة 🔒',
+        'SALON_SUSPENDED'
+      );
+    }
+  } else if (targetSalonId) {
+    const { data: salonCheck } = await supabase
+      .from('salons')
+      .select('is_suspended, suspended_reason')
+      .eq('id', targetSalonId)
+      .maybeSingle();
+
+    if (salonCheck?.is_suspended) {
+      throw new BookingError(
+        salonCheck.suspended_reason
+          ? `لا يمكن تسجيل زبائن: تم تعليق حساب هذا الصالون (${salonCheck.suspended_reason})`
+          : 'لا يمكن تسجيل زبائن: تم تعليق وقفل حساب هذا الصالون من قِبل إدارة المنصة 🔒',
+        'SALON_SUSPENDED'
+      );
+    }
+  }
+
   const todayEgypt = getEgyptLocalDate();
   const currentMins = getEgyptLocalTimeMinutes();
   let slotStart = Math.ceil(currentMins / 5) * 5;
@@ -1241,6 +1317,9 @@ export async function saveSalonSettings(settings, salonId = null) {
 
   if (isDemoMode()) {
     const store = getDemoStore();
+    if (store.salon_settings?.is_suspended) {
+      throw new BookingError('لا يمكن حفظ الإعدادات: الحساب معلق ومقفل من إدارة المنصة 🔒');
+    }
     store.salon_settings = { ...store.salon_settings, ...settings };
     saveDemoStore(store);
     return true;
@@ -1248,6 +1327,16 @@ export async function saveSalonSettings(settings, salonId = null) {
 
   try {
     if (targetSalonId) {
+      const { data: salon } = await supabase
+        .from('salons')
+        .select('is_suspended')
+        .eq('id', targetSalonId)
+        .maybeSingle();
+
+      if (salon?.is_suspended) {
+        throw new BookingError('لا يمكن حفظ الإعدادات: الحساب معلق ومقفل من إدارة المنصة 🔒');
+      }
+
       const { error } = await supabase
         .from('salons')
         .update({
@@ -1345,7 +1434,19 @@ export async function manageService(serviceData) {
   }
 
   try {
-    const targetSalonId = salonId || serviceData.salon_id || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+    const targetSalonId = serviceData.salon_id || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
+    if (targetSalonId) {
+      const { data: salon } = await supabase
+        .from('salons')
+        .select('is_suspended')
+        .eq('id', targetSalonId)
+        .maybeSingle();
+
+      if (salon?.is_suspended) {
+        throw new BookingError('لا يمكن تعديل أو إضافة خدمات: الحساب معلق ومقفل من إدارة المنصة 🔒');
+      }
+    }
 
     if (serviceData.id) {
       const { data, error } = await supabase
@@ -1564,6 +1665,16 @@ export async function toggleSalonSuspension({ masterKey, salonId, suspend, reaso
     throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء.');
   }
 
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    if (store.salon_settings) {
+      store.salon_settings.is_suspended = suspend;
+      store.salon_settings.suspended_reason = suspend ? (reason || 'معلق بأمر الإدارة') : null;
+      saveDemoStore(store);
+    }
+    return true;
+  }
+
   try {
     const { data, error } = await supabase.rpc('super_admin_toggle_salon', {
       p_master_key: masterKey.trim(),
@@ -1588,6 +1699,9 @@ export async function toggleSalonSuspension({ masterKey, salonId, suspend, reaso
     .eq('id', salonId);
 
   if (error) {
+    if (error.message?.includes('is_suspended') || error.code === '42703') {
+      throw new BookingError('قاعدة البيانات ينقصها عمود is_suspended. يرجى تشغيل كود SQL في Supabase أولاً لتفعيل خاصية القفل والفتح الحقيقية.');
+    }
     throw new BookingError('فشل تعديل حالة قفل الصالون: ' + error.message);
   }
   return true;

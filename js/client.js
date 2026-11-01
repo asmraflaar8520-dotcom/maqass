@@ -215,13 +215,15 @@ function renderSalonProfileDOM(settings) {
   if (settings.is_suspended) {
     if (DOM.suspendedBanner) {
       DOM.suspendedBanner.style.display = 'flex';
-      if (DOM.suspendedDesc && settings.suspended_reason) {
-        DOM.suspendedDesc.textContent = settings.suspended_reason;
+      if (DOM.suspendedDesc) {
+        DOM.suspendedDesc.textContent = settings.suspended_reason 
+          ? `السبب: ${settings.suspended_reason} — يرجى التواصل مع إدارة الصالون أو المنصة.` 
+          : 'نعتذر منك، تم إيقاف وتجميد خدمات هذا الصالون حالياً بقرار من إدارة المنصة.';
       }
     }
     if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
     DOM.bookingContainer.style.display = 'none';
-    DOM.salonStatus.textContent = 'الصالون متوقف حالياً 🔒';
+    DOM.salonStatus.textContent = 'الصالون متوقف ومغلق حالياً 🔒';
     DOM.salonStatus.style.color = 'var(--status-cancelled)';
     return;
   } else if (DOM.suspendedBanner) {
@@ -290,14 +292,60 @@ async function loadSalonProfile() {
     localStorage.setItem(cacheKey, JSON.stringify(settings));
     renderSalonProfileDOM(settings);
 
-    // Fetch active barbers for this specific salon
-    if (settings && settings.id) {
+    // Fetch active barbers and active services for this specific salon
+    if (settings && settings.id && !settings.is_suspended) {
       const barbers = await getBarbers(settings.id);
       state.barbers = barbers;
       renderBarberPillsDOM(barbers);
+
+      const services = await getActiveServices(settings.id);
+      renderServicesDOM(services);
+    }
+
+    // Subscribe to live realtime status updates for this salon
+    if (settings && settings.id) {
+      subscribeToSalonRealtime(settings.id);
     }
   } catch (err) {
     console.warn('Could not load salon settings:', err);
+  }
+}
+
+/**
+ * Listens to Realtime changes on the salon record (lock / unlock / pause)
+ */
+let salonRealtimeChannel = null;
+function subscribeToSalonRealtime(salonId) {
+  if (!salonId || typeof supabase === 'undefined' || !supabase.channel) return;
+  try {
+    if (salonRealtimeChannel) {
+      supabase.removeChannel(salonRealtimeChannel);
+      salonRealtimeChannel = null;
+    }
+    salonRealtimeChannel = supabase
+      .channel(`salon-client-realtime-${salonId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'salons',
+          filter: `id=eq.${salonId}`
+        },
+        async (payload) => {
+          if (payload.new) {
+            state.salonSettings = { ...state.salonSettings, ...payload.new };
+            renderSalonProfileDOM(payload.new);
+            if (!payload.new.is_suspended) {
+              const services = await getActiveServices(salonId);
+              renderServicesDOM(services);
+            }
+          }
+        }
+      )
+      .subscribe();
+  } catch (err) {
+    console.warn('Realtime subscription warning:', err);
   }
 }
 
@@ -585,6 +633,13 @@ function selectSlot(slot, chipElement) {
  * Wizard Navigation Controller
  */
 function goToStep(stepNumber) {
+  if (state.salonSettings?.is_suspended) {
+    DOM.bookingContainer.style.display = 'none';
+    if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'flex';
+    showToast('عذراً، الصالون متوقف حالياً ومغلق بقرار من إدارة المنصة 🔒', 'error');
+    return;
+  }
+
   state.currentStep = stepNumber;
 
   DOM.step1.style.display = stepNumber === 1 ? 'block' : 'none';
@@ -629,6 +684,13 @@ function updateSummaryBox() {
  */
 async function handleBookingSubmit(e) {
   e.preventDefault();
+
+  if (state.salonSettings?.is_suspended) {
+    showToast('عذراً، هذا الصالون متوقف ومغلق حالياً بقرار من إدارة المنصة 🔒', 'error', 5000);
+    DOM.bookingContainer.style.display = 'none';
+    if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'flex';
+    return;
+  }
 
   const name = DOM.clientNameInput.value.trim();
   const phone = DOM.clientPhoneInput.value.trim();
