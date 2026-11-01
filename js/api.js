@@ -596,6 +596,47 @@ export async function resetBarberPassword(email) {
 }
 
 /**
+ * Updates user password during password recovery or settings change
+ * @param {string} newPassword
+ * @returns {Promise<Object>}
+ */
+export async function updateUserPassword(newPassword) {
+  if (isDemoMode()) {
+    return { success: true };
+  }
+
+  const cleanPassword = (newPassword || '').trim();
+  if (!cleanPassword || cleanPassword.length < 6) {
+    throw new BookingError('كلمة المرور يجب ألا تقل عن 6 أحرف أو أرقام.');
+  }
+
+  const { data, error } = await supabase.auth.updateUser({
+    password: cleanPassword
+  });
+
+  if (error) {
+    throw new BookingError('فشل تحديث كلمة المرور: ' + error.message);
+  }
+
+  sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+
+  if (data?.user) {
+    const { data: salon } = await supabase
+      .from('salons')
+      .select('*')
+      .eq('owner_id', data.user.id)
+      .maybeSingle();
+
+    if (salon) {
+      localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, salon.id);
+      localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, salon.slug);
+    }
+  }
+
+  return { success: true, user: data.user };
+}
+
+/**
  * Checks if the barber currently has a valid authenticated session
  * @returns {Promise<boolean>}
  */

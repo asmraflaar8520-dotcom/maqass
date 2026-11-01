@@ -23,9 +23,10 @@ import {
   signInBarber,
   signUpNewSalon,
   resetBarberPassword,
+  updateUserPassword,
   signOutBarber,
   getBarberSession
-} from './api.js';
+} from './api.js?v=3.1.0';
 import {
   formatTime12H,
   formatDateArabic,
@@ -139,7 +140,16 @@ const DOM = {
   serviceIdInput: document.getElementById('service-id-input'),
   serviceNameInput: document.getElementById('service-name-input'),
   serviceDurationInput: document.getElementById('service-duration-input'),
-  servicePriceInput: document.getElementById('service-price-input')
+  servicePriceInput: document.getElementById('service-price-input'),
+
+  // Password Recovery Modal Elements
+  modalResetPassword: document.getElementById('modal-reset-password'),
+  formResetPassword: document.getElementById('form-reset-password'),
+  newRecoveryPassword: document.getElementById('new-recovery-password'),
+  confirmRecoveryPassword: document.getElementById('confirm-recovery-password'),
+  recoveryErrorAlert: document.getElementById('recovery-error-alert'),
+  recoveryErrorText: document.getElementById('recovery-error-text'),
+  btnSubmitResetPassword: document.getElementById('btn-submit-reset-password')
 };
 
 /**
@@ -147,6 +157,20 @@ const DOM = {
  */
 document.addEventListener('DOMContentLoaded', async () => {
   setupAuthEventListeners();
+
+  // 1. Password Recovery listener via Supabase event or URL hash
+  const hasRecoveryHash = window.location.hash.includes('type=recovery');
+
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      openRecoveryModal();
+    }
+  });
+
+  if (hasRecoveryHash) {
+    openRecoveryModal();
+    return;
+  }
 
   const isAuthenticated = await getBarberSession();
   if (!isAuthenticated) {
@@ -157,6 +181,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await bootDashboard();
 });
+
+/**
+ * Opens Password Recovery Modal when user clicks reset password link
+ */
+function openRecoveryModal() {
+  if (DOM.modalResetPassword) {
+    DOM.modalResetPassword.style.display = 'flex';
+    if (DOM.loginGate) DOM.loginGate.style.display = 'none';
+    if (DOM.dashboardWrapper) DOM.dashboardWrapper.style.display = 'none';
+    if (DOM.newRecoveryPassword) {
+      setTimeout(() => DOM.newRecoveryPassword.focus(), 150);
+    }
+  }
+}
 
 /**
  * Boots Dashboard after Authentication
@@ -414,6 +452,52 @@ function setupAuthEventListeners() {
         DOM.btnForgotPassword.textContent = origText;
       }
     });
+  }
+
+  // 4. RESET PASSWORD RECOVERY FORM SUBMISSION
+  if (DOM.formResetPassword) {
+    DOM.formResetPassword.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newPass = (DOM.newRecoveryPassword?.value || '').trim();
+      const confirmPass = (DOM.confirmRecoveryPassword?.value || '').trim();
+
+      if (DOM.recoveryErrorAlert) DOM.recoveryErrorAlert.style.display = 'none';
+
+      if (!newPass || newPass.length < 6) {
+        showRecoveryError('كلمة المرور يجب ألا تقل عن 6 أحرف أو أرقام.');
+        return;
+      }
+
+      if (newPass !== confirmPass) {
+        showRecoveryError('كلمتا المرور غير متطابقتين.');
+        return;
+      }
+
+      DOM.btnSubmitResetPassword.disabled = true;
+      const origBtnText = DOM.btnSubmitResetPassword.innerHTML;
+      DOM.btnSubmitResetPassword.innerHTML = 'جاري حفظ كلمة المرور... ⏳';
+
+      try {
+        await updateUserPassword(newPass);
+        if (DOM.modalResetPassword) DOM.modalResetPassword.style.display = 'none';
+        history.replaceState(null, '', window.location.pathname);
+        showToast('تم تعيين كلمة المرور بنجاح! مرحباً بك في صالونك 🎉', 'success');
+        await bootDashboard();
+      } catch (err) {
+        showRecoveryError(err.message || 'تعذر تحديث كلمة المرور.');
+      } finally {
+        DOM.btnSubmitResetPassword.disabled = false;
+        DOM.btnSubmitResetPassword.innerHTML = origBtnText;
+      }
+    });
+  }
+
+  function showRecoveryError(msg) {
+    if (DOM.recoveryErrorAlert && DOM.recoveryErrorText) {
+      DOM.recoveryErrorText.textContent = msg;
+      DOM.recoveryErrorAlert.style.display = 'flex';
+    }
+    showToast(msg, 'error');
   }
 
   function triggerShake() {
