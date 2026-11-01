@@ -949,6 +949,7 @@ function renderWalkInModalServices(activeServices) {
  * TAB 3: Loads and Renders Blacklist Table
  */
 async function loadBlacklistData() {
+  if (!DOM.blacklistTableBody) return;
   try {
     const blacklist = await getBlacklist();
     state.blacklist = blacklist;
