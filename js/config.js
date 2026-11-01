@@ -14,12 +14,12 @@ export const CONFIG = {
   SUPABASE_URL: 
     localStorage.getItem('MAQASS_SUPABASE_URL') || 
     window.MAQASS_ENV?.SUPABASE_URL || 
-    'https://YOUR_PROJECT_ID.supabase.co',
+    'https://gifeydqrizdhchpxyhvi.supabase.co',
 
   SUPABASE_ANON_KEY: 
     localStorage.getItem('MAQASS_SUPABASE_ANON_KEY') || 
     window.MAQASS_ENV?.SUPABASE_ANON_KEY || 
-    'YOUR_SUPABASE_ANON_KEY',
+    'sb_publishable_UCFRtyp6_HUTC7650TztpQ_bjOX4Uhi',
 
   APP_NAME: 'مِقَصْ',
   TIMEZONE: 'Africa/Cairo',
