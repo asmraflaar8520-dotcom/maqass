@@ -133,56 +133,135 @@ function saveDemoStore(store) {
 // =============================================================================
 
 /**
- * Fetches singleton salon settings (name, phone, working hours, paused state, views)
+ * Fetches salon details and settings by slug, ID, or current logged-in owner
+ * @param {string} [identifier] - Salon slug or UUID
  * @returns {Promise<Object>}
  */
-export async function getSalonSettings() {
+export async function getSalonSettings(identifier = null) {
   if (isDemoMode()) {
     return getDemoStore().salon_settings;
   }
 
   try {
-    const { data, error } = await supabase
-      .from('salon_settings')
-      .select('id, salon_name, phone, working_hours, is_paused, total_views')
-      .eq('id', CONFIG.DEFAULT_SALON_ID)
-      .single();
+    let q = supabase.from('salons').select('*');
 
-    if (error) {
-      console.error('Error fetching salon settings:', error);
-      throw new BookingError('فشل في جلب إعدادات الصالون، يرجى المحاولة لاحقاً.', error.code);
+    if (identifier) {
+      if (identifier.length === 36 && identifier.includes('-')) {
+        q = q.eq('id', identifier);
+      } else {
+        q = q.eq('slug', identifier);
+      }
+    } else {
+      // Check localStorage cached salon ID or session
+      const cachedId = localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+      const cachedSlug = localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG);
+      
+      if (cachedId) {
+        q = q.eq('id', cachedId);
+      } else if (cachedSlug) {
+        q = q.eq('slug', cachedSlug);
+      } else {
+        // Fallback to default/main or first salon
+        q = q.eq('slug', 'main');
+      }
     }
 
-    return data;
-  } catch (err) {
-    if (err instanceof BookingError) throw err;
-    // Fallback to demo store if network fails
+    const { data, error } = await q.maybeSingle();
+
+    if (!error && data) {
+      return data;
+    }
+
+    // Fallback: fetch first available salon or legacy salon_settings table
+    const { data: firstSalon } = await supabase.from('salons').select('*').limit(1).maybeSingle();
+    if (firstSalon) return firstSalon;
+
+    const { data: legacy } = await supabase.from('salon_settings').select('*').eq('id', 1).maybeSingle();
+    if (legacy) return legacy;
+
     return getDemoStore().salon_settings;
+  } catch (err) {
+    console.warn('getSalonSettings fallback:', err);
+    return getDemoStore().salon_settings;
+  }
+}
+
+export const getSalon = getSalonSettings;
+
+/**
+ * Fetches active barbers / chairs for a salon
+ * @param {string} [salonId]
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getBarbers(salonId = null) {
+  if (isDemoMode()) {
+    return [
+      { id: 'demo-barber-1', name: 'الأسطى أحمد', is_active: true },
+      { id: 'demo-barber-2', name: 'الأسطى محمود', is_active: true }
+    ];
+  }
+
+  try {
+    let q = supabase
+      .from('barbers')
+      .select('id, salon_id, name, is_active, created_at')
+      .eq('is_active', true);
+
+    if (salonId) {
+      q = q.eq('salon_id', salonId);
+    }
+
+    const { data, error } = await q.order('created_at', { ascending: true });
+
+    if (!error && data && data.length > 0) {
+      return data;
+    }
+
+    // Default barber fallback
+    return [{ id: '00000000-0000-0000-0000-000000000002', name: 'الحلاق الرئيسي', is_active: true }];
+  } catch (err) {
+    console.warn('getBarbers warning:', err);
+    return [{ id: 'default', name: 'الحلاق الرئيسي', is_active: true }];
   }
 }
 
 /**
  * Fetches active services catalog for client booking
+ * @param {string} [salonId]
  * @returns {Promise<Array<Object>>}
  */
-export async function getActiveServices() {
+export async function getActiveServices(salonId = null) {
   if (isDemoMode()) {
     return getDemoStore().services.filter(s => s.is_active);
   }
 
   try {
-    const { data, error } = await supabase
+    let q = supabase
       .from('services')
-      .select('id, name, price, duration_minutes, is_active')
-      .eq('is_active', true)
-      .order('duration_minutes', { ascending: true });
+      .select('id, salon_id, name, price, duration_minutes, is_active')
+      .eq('is_active', true);
+
+    if (salonId) {
+      q = q.eq('salon_id', salonId);
+    }
+
+    const { data, error } = await q.order('duration_minutes', { ascending: true });
 
     if (error) {
       console.error('Error fetching active services:', error);
       throw new BookingError('فشل في جلب قائمة الخدمات المتاحة.', error.code);
     }
 
-    return data || [];
+    if (data && data.length > 0) return data;
+
+    // Fallback: fetch services without salon_id filter
+    const { data: fallbackServices } = await supabase
+      .from('services')
+      .select('id, salon_id, name, price, duration_minutes, is_active')
+      .eq('is_active', true)
+      .limit(5);
+
+    return fallbackServices || [];
   } catch (err) {
     if (err instanceof BookingError) throw err;
     return getDemoStore().services.filter(s => s.is_active);
@@ -192,24 +271,37 @@ export async function getActiveServices() {
 /**
  * Fetches booked slots for a specific date (omits cancelled/no-show)
  * @param {string} date - "YYYY-MM-DD"
+ * @param {string} [salonId]
+ * @param {string} [barberId]
  * @returns {Promise<Array<Object>>}
  */
-export async function getBookedSlots(date) {
+export async function getBookedSlots(date, salonId = null, barberId = null) {
   if (!date) return [];
 
   if (isDemoMode()) {
     const store = getDemoStore();
     return store.appointments
       .filter(a => a.appointment_date === date && !['cancelled', 'no_show'].includes(a.status))
-      .map(a => ({ id: a.id, start_time: a.start_time, end_time: a.end_time, status: a.status }));
+      .map(a => ({ 
+        id: a.id, 
+        barber_id: a.barber_id || 'demo-barber-1',
+        start_time: a.start_time, 
+        end_time: a.end_time, 
+        status: a.status 
+      }));
   }
 
   try {
-    const { data, error } = await supabase
+    let q = supabase
       .from('appointments')
-      .select('id, start_time, end_time, status')
+      .select('id, salon_id, barber_id, start_time, end_time, status')
       .eq('appointment_date', date)
       .not('status', 'in', '("cancelled","no_show")');
+
+    if (salonId) q = q.eq('salon_id', salonId);
+    if (barberId && barberId !== 'any') q = q.eq('barber_id', barberId);
+
+    const { data, error } = await q;
 
     if (error) {
       console.error('Error fetching booked slots:', error);
@@ -229,9 +321,10 @@ export async function getBookedSlots(date) {
 /**
  * Checks if a phone number is blocked on the blacklist
  * @param {string} rawPhone
+ * @param {string} [salonId]
  * @returns {Promise<{ isBlocked: boolean, client: Object|null }>}
  */
-export async function checkBlacklist(rawPhone) {
+export async function checkBlacklist(rawPhone, salonId = null) {
   if (!rawPhone) return { isBlocked: false, client: null };
 
   const sanitized = rawPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
@@ -243,11 +336,14 @@ export async function checkBlacklist(rawPhone) {
   }
 
   try {
-    const { data, error } = await supabase
+    let q = supabase
       .from('blacklist')
-      .select('id, client_phone, no_show_count, is_blocked')
-      .eq('client_phone', sanitized)
-      .maybeSingle();
+      .select('id, salon_id, client_phone, no_show_count, is_blocked')
+      .eq('client_phone', sanitized);
+
+    if (salonId) q = q.eq('salon_id', salonId);
+
+    const { data, error } = await q.maybeSingle();
 
     if (error) {
       console.warn('Blacklist check warning:', error.message);
@@ -274,12 +370,14 @@ export async function createAppointment(payload) {
 
   if (isDemoMode()) {
     const store = getDemoStore();
-    // Simulate collision check
     const startMins = timeToMinutes(startTime);
     const endMins = timeToMinutes(endTime);
 
     const hasCollision = store.appointments.some(a => {
       if (a.appointment_date !== payload.appointment_date || ['cancelled', 'no_show'].includes(a.status)) {
+        return false;
+      }
+      if (payload.barber_id && a.barber_id && a.barber_id !== payload.barber_id) {
         return false;
       }
       const bStart = timeToMinutes(a.start_time);
@@ -289,7 +387,7 @@ export async function createAppointment(payload) {
 
     if (hasCollision) {
       throw new BookingError(
-        'عذراً، هذا الموعد تم حجزه للتو من زبون آخر! يرجى اختيار موعد آخر.',
+        'عذراً، هذا الموعد تم حجزه للتو مع الحلاق المختار! يرجى اختيار موعد آخر.',
         'DOUBLE_BOOKING'
       );
     }
@@ -297,6 +395,8 @@ export async function createAppointment(payload) {
     const srv = store.services.find(s => s.id === payload.service_id) || { name: 'خدمة حلاقة', duration_minutes: 30, price: 70 };
     const newApp = {
       id: 'app-' + Date.now(),
+      salon_id: payload.salon_id || 'demo-salon',
+      barber_id: payload.barber_id || 'demo-barber-1',
       service_id: payload.service_id,
       client_name: payload.client_name.trim(),
       client_phone: sanitizedPhone,
@@ -306,7 +406,8 @@ export async function createAppointment(payload) {
       status: 'pending',
       booking_type: payload.booking_type || 'online',
       created_at: new Date().toISOString(),
-      services: srv
+      services: srv,
+      barbers: { name: payload.barber_name || 'الحلاق' }
     };
 
     store.appointments.push(newApp);
@@ -315,6 +416,8 @@ export async function createAppointment(payload) {
   }
 
   const insertData = {
+    salon_id: payload.salon_id || null,
+    barber_id: (payload.barber_id && payload.barber_id !== 'any') ? payload.barber_id : null,
     service_id: payload.service_id,
     client_name: payload.client_name.trim(),
     client_phone: sanitizedPhone,
@@ -329,7 +432,21 @@ export async function createAppointment(payload) {
     const { data, error } = await supabase
       .from('appointments')
       .insert(insertData)
-      .select('id, appointment_date, start_time, end_time, status, client_name, client_phone, service_id, created_at')
+      .select(`
+        id, 
+        salon_id,
+        barber_id,
+        appointment_date, 
+        start_time, 
+        end_time, 
+        status, 
+        client_name, 
+        client_phone, 
+        service_id, 
+        created_at,
+        services ( name, duration_minutes, price ),
+        barbers ( name )
+      `)
       .single();
 
     if (error) {
@@ -340,7 +457,7 @@ export async function createAppointment(payload) {
         error.message?.includes('exclusion')
       ) {
         throw new BookingError(
-          'عذراً، هذا الموعد تم حجزه للتو من زبون آخر! يرجى اختيار موعد آخر.',
+          'عذراً، هذا الموعد تم حجزه للتو مع الحلاق المختار! يرجى اختيار موعد أو حلاق آخر.',
           'DOUBLE_BOOKING'
         );
       }
@@ -403,21 +520,25 @@ export async function signInBarber(email, password = '') {
 }
 
 /**
- * Checks if barber is currently logged in with active session
+ * Checks if the barber currently has a valid authenticated session
  * @returns {Promise<boolean>}
  */
 export async function getBarberSession() {
+  if (isDemoMode()) {
+    return sessionStorage.getItem(ADMIN_PASSCODE_KEY) === 'true';
+  }
+
   try {
     const { data } = await supabase.auth.getSession();
     if (data?.session) {
       sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
       return true;
     }
-  } catch {
-    // Ignore session check error
+  } catch (err) {
+    console.warn('Session check warning:', err);
   }
-  sessionStorage.removeItem(ADMIN_PASSCODE_KEY);
-  return false;
+
+  return sessionStorage.getItem(ADMIN_PASSCODE_KEY) === 'true';
 }
 
 /**
@@ -425,11 +546,247 @@ export async function getBarberSession() {
  */
 export async function signOutBarber() {
   sessionStorage.removeItem(ADMIN_PASSCODE_KEY);
+  localStorage.removeItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+  localStorage.removeItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG);
   try {
     await supabase.auth.signOut();
   } catch {
     // Ignore sign out error
   }
+}
+
+/**
+ * Registers a new barber account, provisions their unique salon, chairs, and starter services
+ * @param {Object} payload - { email, password, salonName, phone, barberType, barberNames }
+ * @returns {Promise<Object>} Created salon and barbers list
+ */
+export async function signUpNewSalon({ email, password, salonName, phone, barberType = 'single', barberNames = '' }) {
+  const cleanEmail = (email || '').trim();
+  const cleanPassword = (password || '').trim();
+  const cleanName = (salonName || '').trim() || 'صالون الحلاقة';
+  const cleanPhone = (phone || '').trim().replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+
+  if (!cleanEmail || !cleanPassword) {
+    throw new BookingError('يرجى إدخال البريد الإلكتروني وكلمة المرور.');
+  }
+  if (cleanPassword.length < 6) {
+    throw new BookingError('يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل.');
+  }
+
+  // 1. Sign up user in Supabase Auth
+  const { data: authData, error: authErr } = await supabase.auth.signUp({
+    email: cleanEmail,
+    password: cleanPassword
+  });
+
+  if (authErr) {
+    throw new BookingError('فشل إنشاء الحساب: ' + authErr.message);
+  }
+
+  const user = authData?.user;
+  if (!user) {
+    throw new BookingError('تعذر الحصول على بيانات المستخدم بعد التسجيل.');
+  }
+
+  // Ensure active session
+  if (!authData.session) {
+    const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password: cleanPassword
+    });
+    if (signInErr && !signInErr.message.includes('Email not confirmed')) {
+      throw new BookingError(signInErr.message);
+    }
+  }
+
+  // 2. Generate unique random slug
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  const slug = 'salon-' + randomSuffix;
+
+  // 3. Create Salon record
+  const { data: salon, error: salonErr } = await supabase
+    .from('salons')
+    .insert({
+      owner_id: user.id,
+      slug: slug,
+      salon_name: cleanName,
+      phone: cleanPhone || '01000000000',
+      is_paused: false,
+      total_views: 0
+    })
+    .select()
+    .single();
+
+  if (salonErr) {
+    console.error('Error creating salon record:', salonErr);
+    throw new BookingError('تم إنشاء الحساب ولكن تعذر تجهيز الصالون: ' + salonErr.message);
+  }
+
+  // 4. Create Barbers / Chairs
+  let barbersToInsert = [];
+  if (barberType === 'multi' && barberNames.trim()) {
+    const names = barberNames.split(/[,،\n]/).map(n => n.trim()).filter(Boolean);
+    if (names.length > 0) {
+      barbersToInsert = names.map(name => ({
+        salon_id: salon.id,
+        name: name,
+        is_active: true
+      }));
+    }
+  }
+  if (barbersToInsert.length === 0) {
+    barbersToInsert = [{
+      salon_id: salon.id,
+      name: cleanName,
+      is_active: true
+    }];
+  }
+
+  const { data: createdBarbers, error: barberErr } = await supabase
+    .from('barbers')
+    .insert(barbersToInsert)
+    .select();
+
+  if (barberErr) {
+    console.warn('Barber creation warning:', barberErr);
+  }
+
+  // 5. Create default initial services for this salon
+  const defaultServices = [
+    { salon_id: salon.id, name: 'قص شعر كلاسيكي / مودرن', price: 70, duration_minutes: 30, is_active: true },
+    { salon_id: salon.id, name: 'تحديد وتهذيب اللحية', price: 40, duration_minutes: 20, is_active: true },
+    { salon_id: salon.id, name: 'سشوار وتصفيف', price: 30, duration_minutes: 15, is_active: true },
+    { salon_id: salon.id, name: 'ماسك وصنفرة بشرة بالبخار', price: 60, duration_minutes: 25, is_active: true },
+    { salon_id: salon.id, name: 'باكيدج كامل (شعر + دقن + ماسك)', price: 150, duration_minutes: 60, is_active: true }
+  ];
+
+  await supabase.from('services').insert(defaultServices);
+
+  // Store active salon in localStorage
+  localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, salon.id);
+  localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, salon.slug);
+  sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+
+  return { salon, barbers: createdBarbers || [] };
+}
+
+/**
+ * Fetches the salon owned by the currently logged-in barber
+ * @returns {Promise<Object>}
+ */
+export async function getSalonForCurrentBarber() {
+  if (isDemoMode()) {
+    return getDemoStore().salon_settings;
+  }
+
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const currentUserId = sessionData?.session?.user?.id;
+
+    if (currentUserId) {
+      const { data, error } = await supabase
+        .from('salons')
+        .select('*')
+        .eq('owner_id', currentUserId)
+        .maybeSingle();
+
+      if (!error && data) {
+        localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, data.id);
+        localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, data.slug);
+        return data;
+      }
+    }
+
+    // Fallback: check localStorage cached ID
+    const cachedId = localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+    if (cachedId) {
+      const { data } = await supabase.from('salons').select('*').eq('id', cachedId).maybeSingle();
+      if (data) return data;
+    }
+
+    // Fallback: main salon
+    const { data: mainSalon } = await supabase.from('salons').select('*').limit(1).maybeSingle();
+    if (mainSalon) return mainSalon;
+
+    const { data: legacy } = await supabase.from('salon_settings').select('*').eq('id', 1).maybeSingle();
+    if (legacy) return legacy;
+
+    return getDemoStore().salon_settings;
+  } catch (err) {
+    console.warn('getSalonForCurrentBarber fallback:', err);
+    return getDemoStore().salon_settings;
+  }
+}
+
+/**
+ * Manages (creates or updates) a barber chair
+ */
+export async function manageBarber({ id = null, salonId, name, isActive = true }) {
+  try {
+    if (id) {
+      const { data, error } = await supabase
+        .from('barbers')
+        .update({ name: name.trim(), is_active: isActive })
+        .eq('id', id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    } else {
+      const { data, error } = await supabase
+        .from('barbers')
+        .insert({ salon_id: salonId, name: name.trim(), is_active: isActive })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+  } catch (err) {
+    throw new BookingError('فشل في حفظ بيانات الحلاق: ' + err.message);
+  }
+}
+
+/**
+ * Deletes a barber chair
+ */
+export async function deleteBarber(barberId) {
+  try {
+    const { error } = await supabase
+      .from('barbers')
+      .delete()
+      .eq('id', barberId);
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    throw new BookingError('فشل في حذف الحلاق: ' + err.message);
+  }
+}
+
+/**
+ * Increments visitor counter for a salon
+ */
+export async function incrementSalonViews(salonId = null) {
+  if (isDemoMode()) return null;
+  const sessionKey = (CONFIG.STORAGE_KEYS.VIEW_RECORDED || 'maqass_view') + '_' + (salonId || 'main');
+  if (sessionStorage.getItem(sessionKey)) return null;
+
+  try {
+    if (salonId) {
+      const { data, error } = await supabase.rpc('increment_salon_views', { p_salon_id: salonId });
+      if (!error && data !== null) {
+        sessionStorage.setItem(sessionKey, 'true');
+        return data;
+      }
+    }
+    const { data, error } = await supabase.rpc('increment_views');
+    if (!error && data !== null) {
+      sessionStorage.setItem(sessionKey, 'true');
+      return data;
+    }
+  } catch (err) {
+    console.warn('increment views warning:', err);
+  }
+  return null;
 }
 
 // =============================================================================
@@ -439,9 +796,12 @@ export async function signOutBarber() {
 /**
  * 1-Tap Toggle for Salon Operational Break Status (is_paused)
  * @param {boolean} isPaused
+ * @param {string} [salonId]
  * @returns {Promise<boolean>}
  */
-export async function toggleSalonPause(isPaused) {
+export async function toggleSalonPause(isPaused, salonId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
   if (isDemoMode()) {
     const store = getDemoStore();
     store.salon_settings.is_paused = isPaused;
@@ -450,6 +810,17 @@ export async function toggleSalonPause(isPaused) {
   }
 
   try {
+    if (targetSalonId) {
+      const { error } = await supabase
+        .from('salons')
+        .update({ is_paused: isPaused, updated_at: new Date().toISOString() })
+        .eq('id', targetSalonId);
+
+      if (error) throw error;
+      return isPaused;
+    }
+
+    // Fallback: legacy salon_settings table
     const { error } = await supabase
       .from('salon_settings')
       .update({ is_paused: isPaused, updated_at: new Date().toISOString() })
@@ -466,9 +837,13 @@ export async function toggleSalonPause(isPaused) {
 /**
  * Fetches all appointments for specified Egypt local date ordered by start_time
  * @param {string} date - "YYYY-MM-DD"
+ * @param {string} [salonId]
+ * @param {string} [barberId]
  * @returns {Promise<Array<Object>>}
  */
-export async function getTodayAppointments(date) {
+export async function getTodayAppointments(date, salonId = null, barberId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
   if (isDemoMode()) {
     const store = getDemoStore();
     return store.appointments
@@ -477,10 +852,12 @@ export async function getTodayAppointments(date) {
   }
 
   try {
-    const { data, error } = await supabase
+    let q = supabase
       .from('appointments')
       .select(`
         id,
+        salon_id,
+        barber_id,
         service_id,
         client_name,
         client_phone,
@@ -495,10 +872,22 @@ export async function getTodayAppointments(date) {
           name,
           duration_minutes,
           price
+        ),
+        barbers (
+          id,
+          name
         )
       `)
-      .eq('appointment_date', date)
-      .order('start_time', { ascending: true });
+      .eq('appointment_date', date);
+
+    if (targetSalonId) {
+      q = q.eq('salon_id', targetSalonId);
+    }
+    if (barberId && barberId !== 'all') {
+      q = q.eq('barber_id', barberId);
+    }
+
+    const { data, error } = await q.order('start_time', { ascending: true });
 
     if (error) {
       console.error('Error fetching today appointments:', error);
@@ -512,6 +901,7 @@ export async function getTodayAppointments(date) {
     return store.appointments.filter(a => a.appointment_date === date);
   }
 }
+
 
 /**
  * 1-Tap Update Appointment Status
@@ -612,9 +1002,12 @@ async function handleNoShowBlacklist(rawPhone) {
  * 1-TAP WALK-IN APPOINTMENT CREATOR WITH TIME BUFFER CHECK
  * @param {string} serviceId
  * @param {boolean} [force=false]
+ * @param {string} [salonId=null]
+ * @param {string} [barberId=null]
  * @returns {Promise<Object>} Created appointment OR buffer warning object
  */
-export async function addWalkInAppointment(serviceId, force = false) {
+export async function addWalkInAppointment(serviceId, force = false, salonId = null, barberId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
   const todayEgypt = getEgyptLocalDate();
   const currentMins = getEgyptLocalTimeMinutes();
   let slotStart = Math.ceil(currentMins / 5) * 5;
@@ -639,7 +1032,7 @@ export async function addWalkInAppointment(serviceId, force = false) {
   const duration = service.duration_minutes || 30;
 
   // Fetch booked slots for today
-  const booked = await getBookedSlots(todayEgypt);
+  const booked = await getBookedSlots(todayEgypt, targetSalonId, barberId);
   const activeIntervals = booked.map(b => ({
     start: timeToMinutes(b.start_time),
     end: timeToMinutes(b.end_time)
@@ -710,6 +1103,8 @@ export async function addWalkInAppointment(serviceId, force = false) {
     const { data: walkIn, error: wErr } = await supabase
       .from('appointments')
       .insert({
+        salon_id: targetSalonId || null,
+        barber_id: (barberId && barberId !== 'any') ? barberId : null,
         service_id: service.id,
         client_name: 'زبون مباشر (Walk-in)',
         client_phone: '01000000000',
@@ -741,7 +1136,9 @@ export async function addWalkInAppointment(serviceId, force = false) {
  * @param {Object} settings
  * @returns {Promise<boolean>}
  */
-export async function saveSalonSettings(settings) {
+export async function saveSalonSettings(settings, salonId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
   if (isDemoMode()) {
     const store = getDemoStore();
     store.salon_settings = { ...store.salon_settings, ...settings };
@@ -750,6 +1147,21 @@ export async function saveSalonSettings(settings) {
   }
 
   try {
+    if (targetSalonId) {
+      const { error } = await supabase
+        .from('salons')
+        .update({
+          salon_name: settings.salon_name,
+          phone: settings.phone,
+          working_hours: settings.working_hours,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', targetSalonId);
+
+      if (error) throw error;
+      return true;
+    }
+
     const { error } = await supabase
       .from('salon_settings')
       .update({
@@ -770,18 +1182,26 @@ export async function saveSalonSettings(settings) {
 
 /**
  * Fetches all services (active & inactive) for salon management
+ * @param {string} [salonId]
  * @returns {Promise<Array<Object>>}
  */
-export async function getAllServices() {
+export async function getAllServices(salonId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
   if (isDemoMode()) {
     return getDemoStore().services;
   }
 
   try {
-    const { data, error } = await supabase
+    let q = supabase
       .from('services')
-      .select('*')
-      .order('created_at', { ascending: true });
+      .select('*');
+
+    if (targetSalonId) {
+      q = q.eq('salon_id', targetSalonId);
+    }
+
+    const { data, error } = await q.order('created_at', { ascending: true });
 
     if (error) throw error;
     return data || [];
@@ -825,6 +1245,8 @@ export async function manageService(serviceData) {
   }
 
   try {
+    const targetSalonId = salonId || serviceData.salon_id || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+
     if (serviceData.id) {
       const { data, error } = await supabase
         .from('services')
@@ -844,6 +1266,7 @@ export async function manageService(serviceData) {
       const { data, error } = await supabase
         .from('services')
         .insert({
+          salon_id: targetSalonId || null,
           name: serviceData.name,
           duration_minutes: parseInt(serviceData.duration_minutes, 10),
           price: parseFloat(serviceData.price || 0),

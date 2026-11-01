@@ -32,7 +32,9 @@ export const CONFIG = {
     USER_PHONE: 'maqass_client_phone',
     USER_NAME: 'maqass_client_name',
     AUTH_TOKEN: 'maqass_barber_session',
-    VIEW_RECORDED: 'maqass_view_counted_session'
+    VIEW_RECORDED: 'maqass_view_counted_session',
+    CURRENT_SALON_ID: 'maqass_current_salon_id',
+    CURRENT_SALON_SLUG: 'maqass_current_salon_slug'
   }
 };
 

@@ -1,17 +1,19 @@
 -- =============================================================================
--- Maqass (مِقَصْ) — Barbershop Management System (Supabase SQL Schema)
--- Production Hardened Edition for GitHub Pages & Supabase Free Tier
+-- Maqass (مِقَصْ) — Multi-Salon & Multi-Barber SaaS Platform (Supabase Schema)
+-- Production Hardened Edition: Strict RLS, Multi-Tenancy & Double-Booking by Barber
 -- =============================================================================
 
--- Enable required extensions at the very top
+-- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "btree_gist";
 
 -- =============================================================================
--- 1. SALON SETTINGS (Single-tenant Barbershop Settings & Live Ticker)
+-- 1. SALONS TABLE (Multi-Tenant Salon Entities)
 -- =============================================================================
-CREATE TABLE IF NOT EXISTS salon_settings (
-  id            INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+CREATE TABLE IF NOT EXISTS salons (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id      UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  slug          TEXT UNIQUE NOT NULL,
   salon_name    TEXT NOT NULL DEFAULT 'صالون الحلاقة',
   phone         TEXT NOT NULL DEFAULT '01000000000',
   working_hours JSONB NOT NULL DEFAULT '{
@@ -25,19 +27,32 @@ CREATE TABLE IF NOT EXISTS salon_settings (
   }'::jsonb,
   is_paused     BOOLEAN NOT NULL DEFAULT FALSE,
   total_views   BIGINT NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Seed default singleton row if not already present
-INSERT INTO salon_settings (id, salon_name, phone, is_paused, total_views)
-VALUES (1, 'مِقَصْ للحلاقة الرجالية', '01012345678', FALSE, 0)
-ON CONFLICT (id) DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_salons_owner ON salons(owner_id);
+CREATE INDEX IF NOT EXISTS idx_salons_slug ON salons(slug);
 
 -- =============================================================================
--- 2. SERVICES (Catalog with duration and display-only pricing)
+-- 2. BARBERS TABLE (Staff / Chairs per Salon)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS barbers (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id    UUID NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_barbers_salon ON barbers(salon_id, is_active);
+
+-- =============================================================================
+-- 3. SERVICES (Catalog with duration and pricing per salon)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS services (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id         UUID REFERENCES salons(id) ON DELETE CASCADE,
   name             TEXT NOT NULL,
   price            NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
   duration_minutes INTEGER NOT NULL DEFAULT 30 CHECK (duration_minutes > 0),
@@ -45,23 +60,26 @@ CREATE TABLE IF NOT EXISTS services (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_services_active ON services(is_active);
+-- Backward compatibility: Ensure column salon_id exists if services table was created previously
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'services' AND column_name = 'salon_id'
+  ) THEN
+    ALTER TABLE services ADD COLUMN salon_id UUID REFERENCES salons(id) ON DELETE CASCADE;
+  END IF;
+END $$;
 
--- Seed default common Egyptian barbershop services
-INSERT INTO services (name, price, duration_minutes, is_active)
-VALUES 
-  ('قص شعر كلاسيكي / مودرن', 70.00, 30, TRUE),
-  ('تحديد وتهذيب اللحية', 40.00, 20, TRUE),
-  ('سشوار وتصفيف', 30.00, 15, TRUE),
-  ('ماسك وصنفرة بشرة بالبخار', 60.00, 25, TRUE),
-  ('باكيدج كامل (شعر + دقن + ماسك)', 150.00, 60, TRUE)
-ON CONFLICT DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_services_salon ON services(salon_id, is_active);
 
 -- =============================================================================
--- 3. APPOINTMENTS (Schedule, Queue & Walk-ins)
+-- 4. APPOINTMENTS (Schedule, Queue & Walk-ins)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS appointments (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id         UUID REFERENCES salons(id) ON DELETE CASCADE,
+  barber_id        UUID REFERENCES barbers(id) ON DELETE SET NULL,
   service_id       UUID NOT NULL REFERENCES services(id) ON DELETE RESTRICT,
   client_name      TEXT NOT NULL,
   client_phone     TEXT NOT NULL,
@@ -74,25 +92,40 @@ CREATE TABLE IF NOT EXISTS appointments (
                    CHECK (booking_type IN ('online', 'walk_in')),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  -- Strict validation: End time must strictly follow start time
   CONSTRAINT chk_appointment_time_order CHECK (end_time > start_time)
 );
 
--- Performance Indexes (Critical for Free-Tier performance)
-CREATE INDEX IF NOT EXISTS idx_appointments_date_status 
-  ON appointments(appointment_date, status);
+-- Backward compatibility: Ensure columns exist if table was already created
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'appointments' AND column_name = 'salon_id'
+  ) THEN
+    ALTER TABLE appointments ADD COLUMN salon_id UUID REFERENCES salons(id) ON DELETE CASCADE;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'appointments' AND column_name = 'barber_id'
+  ) THEN
+    ALTER TABLE appointments ADD COLUMN barber_id UUID REFERENCES barbers(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_appointments_salon_date_status 
+  ON appointments(salon_id, appointment_date, status);
+
+CREATE INDEX IF NOT EXISTS idx_appointments_barber_date 
+  ON appointments(barber_id, appointment_date, start_time);
 
 CREATE INDEX IF NOT EXISTS idx_appointments_client_phone 
   ON appointments(client_phone);
 
-CREATE INDEX IF NOT EXISTS idx_appointments_active_queue 
-  ON appointments(appointment_date, start_time)
-  WHERE status IN ('pending', 'in_progress');
-
 -- =============================================================================
--- 4. DOUBLE-BOOKING PREVENTION (Database-Enforced GiST Exclusion Constraint)
--- Completely eliminates race conditions in high-concurrency client bookings.
--- Only active statuses ('pending', 'in_progress', 'completed') hold slot locks.
+-- 5. DOUBLE-BOOKING PREVENTION BY BARBER CHAIR (GiST Exclusion Constraint)
+-- Two clients CAN book the same time slot IF they are on different barber chairs!
+-- A single barber chair CANNOT have overlapping active appointments.
 -- =============================================================================
 ALTER TABLE appointments
   DROP CONSTRAINT IF EXISTS no_double_booking;
@@ -100,6 +133,7 @@ ALTER TABLE appointments
 ALTER TABLE appointments
   ADD CONSTRAINT no_double_booking
   EXCLUDE USING gist (
+    barber_id WITH =,
     appointment_date WITH =,
     tsrange(
       ('2000-01-01'::date + start_time)::timestamp,
@@ -107,45 +141,121 @@ ALTER TABLE appointments
       '[)'
     ) WITH &&
   )
-  WHERE (status NOT IN ('cancelled', 'no_show'));
+  WHERE (status NOT IN ('cancelled', 'no_show') AND barber_id IS NOT NULL);
 
 -- =============================================================================
--- 5. BLACKLIST (Clients flagged for excessive no-shows)
+-- 6. BLACKLIST (Clients flagged per salon)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS blacklist (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_phone  TEXT NOT NULL UNIQUE,
+  salon_id      UUID REFERENCES salons(id) ON DELETE CASCADE,
+  client_phone  TEXT NOT NULL,
   no_show_count INTEGER NOT NULL DEFAULT 1 CHECK (no_show_count >= 0),
   is_blocked    BOOLEAN NOT NULL DEFAULT FALSE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_blacklist_phone ON blacklist(client_phone);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'blacklist' AND column_name = 'salon_id'
+  ) THEN
+    ALTER TABLE blacklist ADD COLUMN salon_id UUID REFERENCES salons(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_blacklist_salon_phone ON blacklist(salon_id, client_phone);
 
 -- =============================================================================
--- 6. ROW LEVEL SECURITY (RLS) POLICIES — HARDENED ACCESS CONTROL
--- Strict rules: Anonymous users can NEVER update or delete appointments.
--- All write/update/delete management strictly requires authenticated Supabase session.
+-- 7. DEFAULT SALON SEED FOR SMOOTH BACKWARD COMPATIBILITY
+-- Ensures existing installations continue operating without interruption
 -- =============================================================================
+INSERT INTO salons (id, slug, salon_name, phone, is_paused, total_views)
+VALUES (
+  '00000000-0000-0000-0000-000000000001'::uuid, 
+  'main', 
+  'مِقَصْ للحلاقة الرجالية', 
+  '01012345678', 
+  FALSE, 
+  0
+)
+ON CONFLICT (slug) DO NOTHING;
 
-ALTER TABLE salon_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE services       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE appointments   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE blacklist      ENABLE ROW LEVEL SECURITY;
+INSERT INTO barbers (id, salon_id, name, is_active)
+VALUES (
+  '00000000-0000-0000-0000-000000000002'::uuid,
+  '00000000-0000-0000-0000-000000000001'::uuid,
+  'الأسطى الرئيسي',
+  TRUE
+)
+ON CONFLICT (id) DO NOTHING;
 
--- ---- SALON SETTINGS POLICIES ----
-DROP POLICY IF EXISTS "Public can view salon settings" ON salon_settings;
-CREATE POLICY "Public can view salon settings" 
-  ON salon_settings FOR SELECT 
+-- Populate salon_id and barber_id on legacy orphan records
+UPDATE services SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
+UPDATE appointments SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
+UPDATE appointments SET barber_id = '00000000-0000-0000-0000-000000000002'::uuid WHERE barber_id IS NULL;
+UPDATE blacklist SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
+
+-- Default sample services if table is empty
+INSERT INTO services (salon_id, name, price, duration_minutes, is_active)
+SELECT 
+  '00000000-0000-0000-0000-000000000001'::uuid,
+  s.name, s.price, s.duration_minutes, TRUE
+FROM (VALUES 
+  ('قص شعر كلاسيكي / مودرن', 70.00, 30),
+  ('تحديد وتهذيب اللحية', 40.00, 20),
+  ('سشوار وتصفيف', 30.00, 15),
+  ('ماسك وصنفرة بشرة بالبخار', 60.00, 25),
+  ('باكيدج كامل (شعر + دقن + ماسك)', 150.00, 60)
+) AS s(name, price, duration_minutes)
+WHERE NOT EXISTS (SELECT 1 FROM services WHERE salon_id = '00000000-0000-0000-0000-000000000001'::uuid);
+
+-- =============================================================================
+-- 8. ROW LEVEL SECURITY (RLS) POLICIES — MULTI-TENANT ISOLATION
+-- =============================================================================
+ALTER TABLE salons       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE barbers      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE services     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE blacklist    ENABLE ROW LEVEL SECURITY;
+
+-- ---- SALONS POLICIES ----
+DROP POLICY IF EXISTS "Public can view salons" ON salons;
+CREATE POLICY "Public can view salons" 
+  ON salons FOR SELECT 
   USING (TRUE);
 
-DROP POLICY IF EXISTS "Authenticated barber can update salon settings" ON salon_settings;
-CREATE POLICY "Authenticated barber can update salon settings" 
-  ON salon_settings FOR UPDATE 
+DROP POLICY IF EXISTS "Authenticated can create salon" ON salons;
+CREATE POLICY "Authenticated can create salon" 
+  ON salons FOR INSERT 
   TO authenticated 
-  USING (auth.uid() IS NOT NULL) 
-  WITH CHECK (auth.uid() IS NOT NULL);
+  WITH CHECK (owner_id = auth.uid() OR owner_id IS NULL);
+
+DROP POLICY IF EXISTS "Owner can manage own salon" ON salons;
+CREATE POLICY "Owner can manage own salon" 
+  ON salons FOR ALL 
+  TO authenticated 
+  USING (owner_id = auth.uid() OR owner_id IS NULL) 
+  WITH CHECK (owner_id = auth.uid() OR owner_id IS NULL);
+
+-- ---- BARBERS POLICIES ----
+DROP POLICY IF EXISTS "Public can view active barbers" ON barbers;
+CREATE POLICY "Public can view active barbers" 
+  ON barbers FOR SELECT 
+  USING (is_active = TRUE OR auth.role() = 'authenticated');
+
+DROP POLICY IF EXISTS "Owner can manage barbers" ON barbers;
+CREATE POLICY "Owner can manage barbers" 
+  ON barbers FOR ALL 
+  TO authenticated 
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+  ) 
+  WITH CHECK (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+  );
 
 -- ---- SERVICES POLICIES ----
 DROP POLICY IF EXISTS "Public can view active services" ON services;
@@ -153,21 +263,23 @@ CREATE POLICY "Public can view active services"
   ON services FOR SELECT 
   USING (is_active = TRUE OR auth.role() = 'authenticated');
 
-DROP POLICY IF EXISTS "Authenticated barber can manage services" ON services;
-CREATE POLICY "Authenticated barber can manage services" 
+DROP POLICY IF EXISTS "Owner can manage services" ON services;
+CREATE POLICY "Owner can manage services" 
   ON services FOR ALL 
   TO authenticated 
-  USING (auth.uid() IS NOT NULL) 
-  WITH CHECK (auth.uid() IS NOT NULL);
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  ) 
+  WITH CHECK (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  );
 
 -- ---- APPOINTMENTS POLICIES ----
--- 1. Public can read appointments for date slot calculation & queue viewing
 DROP POLICY IF EXISTS "Public can view appointments for slot calculation" ON appointments;
 CREATE POLICY "Public can view appointments for slot calculation" 
   ON appointments FOR SELECT 
   USING (TRUE);
 
--- 2. Public can ONLY INSERT 'pending' bookings (cannot forge status or delete)
 DROP POLICY IF EXISTS "Public can book pending appointments" ON appointments;
 CREATE POLICY "Public can book pending appointments" 
   ON appointments FOR INSERT 
@@ -176,41 +288,68 @@ CREATE POLICY "Public can book pending appointments"
     booking_type IN ('online', 'walk_in')
   );
 
--- 3. STRICT: UPDATE on appointments requires authenticated barber session
-DROP POLICY IF EXISTS "Authenticated barber can update appointment status" ON appointments;
-CREATE POLICY "Authenticated barber can update appointment status" 
+DROP POLICY IF EXISTS "Owner can update appointments" ON appointments;
+CREATE POLICY "Owner can update appointments" 
   ON appointments FOR UPDATE 
   TO authenticated 
-  USING (auth.uid() IS NOT NULL) 
-  WITH CHECK (auth.uid() IS NOT NULL);
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  ) 
+  WITH CHECK (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  );
 
--- 4. STRICT: DELETE on appointments requires authenticated barber session
-DROP POLICY IF EXISTS "Authenticated barber can delete appointments" ON appointments;
-CREATE POLICY "Authenticated barber can delete appointments" 
+DROP POLICY IF EXISTS "Owner can delete appointments" ON appointments;
+CREATE POLICY "Owner can delete appointments" 
   ON appointments FOR DELETE 
   TO authenticated 
-  USING (auth.uid() IS NOT NULL);
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  );
 
 -- ---- BLACKLIST POLICIES ----
--- Public can check if phone is blocked during booking verification
 DROP POLICY IF EXISTS "Public can check blacklist status" ON blacklist;
 CREATE POLICY "Public can check blacklist status" 
   ON blacklist FOR SELECT 
   USING (TRUE);
 
--- Authenticated barber has full control over the blacklist
-DROP POLICY IF EXISTS "Authenticated barber full blacklist access" ON blacklist;
-CREATE POLICY "Authenticated barber full blacklist access" 
+DROP POLICY IF EXISTS "Owner can manage blacklist" ON blacklist;
+CREATE POLICY "Owner can manage blacklist" 
   ON blacklist FOR ALL 
   TO authenticated 
-  USING (auth.uid() IS NOT NULL) 
-  WITH CHECK (auth.uid() IS NOT NULL);
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  ) 
+  WITH CHECK (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+  );
 
 -- =============================================================================
--- 7. ATOMIC RPC FUNCTION: increment_views()
--- Increment the visitor counter without race conditions and minimal write load.
--- SECURITY DEFINER permits anonymous execution while maintaining strict RLS.
+-- 9. ATOMIC RPC FUNCTIONS: increment_salon_views
 -- =============================================================================
+CREATE OR REPLACE FUNCTION increment_salon_views(p_salon_id UUID)
+RETURNS BIGINT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_updated_views BIGINT;
+BEGIN
+  UPDATE salons
+  SET total_views = total_views + 1,
+      updated_at = now()
+  WHERE id = p_salon_id
+  RETURNING total_views INTO v_updated_views;
+
+  RETURN v_updated_views;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION increment_salon_views(UUID) TO anon;
+GRANT EXECUTE ON FUNCTION increment_salon_views(UUID) TO authenticated;
+
+-- Maintain legacy increment_views() for backward compatibility
 CREATE OR REPLACE FUNCTION increment_views()
 RETURNS BIGINT
 LANGUAGE plpgsql
@@ -220,16 +359,15 @@ AS $$
 DECLARE
   v_updated_views BIGINT;
 BEGIN
-  UPDATE salon_settings
+  UPDATE salons
   SET total_views = total_views + 1,
       updated_at = now()
-  WHERE id = 1
+  WHERE slug = 'main' OR id = '00000000-0000-0000-0000-000000000001'::uuid
   RETURNING total_views INTO v_updated_views;
 
   RETURN v_updated_views;
 END;
 $$;
 
--- Grant permissions for RPC execution
 GRANT EXECUTE ON FUNCTION increment_views() TO anon;
 GRANT EXECUTE ON FUNCTION increment_views() TO authenticated;

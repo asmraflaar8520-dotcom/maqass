@@ -1112,4 +1112,10 @@ input:checked + .slider:before {
   box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25) !important;
 }
 
+.active-filter {
+  background: rgba(212, 175, 55, 0.15) !important;
+  border-color: var(--gold-primary) !important;
+  color: var(--gold-primary) !important;
+}
+
 

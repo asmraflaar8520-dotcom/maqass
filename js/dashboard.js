@@ -6,6 +6,10 @@
 import { CONFIG, supabase, ARABIC_DAYS } from './config.js';
 import {
   getSalonSettings,
+  getSalonForCurrentBarber,
+  getBarbers,
+  manageBarber,
+  deleteBarber,
   getTodayAppointments,
   updateAppointmentStatus,
   addWalkInAppointment,
@@ -17,6 +21,7 @@ import {
   getBlacklist,
   unblockClient,
   signInBarber,
+  signUpNewSalon,
   signOutBarber,
   getBarberSession
 } from './api.js';
@@ -33,6 +38,8 @@ const state = {
   currentTab: 'tab-queue',
   selectedDate: getEgyptLocalDate(),
   salonSettings: null,
+  barbers: [],
+  selectedBarberFilter: 'all',
   todayAppointments: [],
   allServices: [],
   blacklist: [],
@@ -43,9 +50,27 @@ const state = {
 const DOM = {
   // Auth
   loginGate: document.getElementById('login-gate'),
+  tabAuthLogin: document.getElementById('tab-auth-login'),
+  tabAuthRegister: document.getElementById('tab-auth-register'),
   loginForm: document.getElementById('login-form'),
   loginEmail: document.getElementById('login-email'),
   loginPassword: document.getElementById('login-password'),
+  loginErrorAlert: document.getElementById('login-error-alert'),
+  loginErrorText: document.getElementById('login-error-text'),
+
+  // Register Form
+  registerForm: document.getElementById('register-form'),
+  regSalonName: document.getElementById('reg-salon-name'),
+  regPhone: document.getElementById('reg-phone'),
+  regEmail: document.getElementById('reg-email'),
+  regPassword: document.getElementById('reg-password'),
+  regBarberTypes: document.querySelectorAll('input[name="reg-barber-type"]'),
+  regBarbersNamesContainer: document.getElementById('reg-barbers-names-container'),
+  regBarberNames: document.getElementById('reg-barber-names'),
+  btnRegisterSubmit: document.getElementById('btn-register-submit'),
+  registerErrorAlert: document.getElementById('register-error-alert'),
+  registerErrorText: document.getElementById('register-error-text'),
+
   dashboardWrapper: document.getElementById('dashboard-wrapper'),
   btnLogout: document.getElementById('btn-logout'),
 
@@ -53,6 +78,8 @@ const DOM = {
   dashSalonName: document.getElementById('dash-salon-name'),
   dashViewsCount: document.getElementById('dash-views-count'),
   syncIndicator: document.getElementById('sync-indicator'),
+  btnCopySalonLink: document.getElementById('btn-copy-salon-link'),
+  btnViewClientPage: document.getElementById('btn-view-client-page'),
 
   // Command Bar
   btnTogglePause: document.getElementById('btn-toggle-pause'),
@@ -67,6 +94,7 @@ const DOM = {
   queueDatePicker: document.getElementById('queue-date-picker'),
   btnTodayShortcut: document.getElementById('btn-today-shortcut'),
   queueSummaryTag: document.getElementById('queue-summary-tag'),
+  queueBarberFilter: document.getElementById('queue-barber-filter'),
   queueCardsContainer: document.getElementById('queue-cards-container'),
 
   // Tab 2: Stats
@@ -76,7 +104,10 @@ const DOM = {
   statShowupRate: document.getElementById('stat-showup-rate'),
   servicesBreakdownList: document.getElementById('services-breakdown-list'),
 
-  // Tab 3: Settings & Blacklist
+  // Tab 3: Settings, Barbers & Blacklist
+  barbersManageCard: document.getElementById('barbers-manage-card'),
+  barbersManageList: document.getElementById('barbers-manage-list'),
+  btnAddBarberModal: document.getElementById('btn-add-barber-modal'),
   servicesManageList: document.getElementById('services-manage-list'),
   btnAddServiceModal: document.getElementById('btn-add-service-modal'),
   salonSettingsForm: document.getElementById('salon-settings-form'),
@@ -88,7 +119,16 @@ const DOM = {
   // Modals
   walkinModal: document.getElementById('walkin-modal'),
   btnCloseWalkinModal: document.getElementById('btn-close-walkin-modal'),
+  walkinBarberGroup: document.getElementById('walkin-barber-group'),
+  walkinBarberSelect: document.getElementById('walkin-barber-select'),
   walkinServicesGrid: document.getElementById('walkin-services-grid'),
+
+  barberModal: document.getElementById('barber-modal'),
+  barberModalTitle: document.getElementById('barber-modal-title'),
+  btnCloseBarberModal: document.getElementById('btn-close-barber-modal'),
+  barberForm: document.getElementById('barber-form'),
+  barberIdInput: document.getElementById('barber-id-input'),
+  barberNameInput: document.getElementById('barber-name-input'),
 
   serviceModal: document.getElementById('service-modal'),
   serviceModalTitle: document.getElementById('service-modal-title'),
@@ -129,6 +169,7 @@ async function bootDashboard() {
   // Initial Data Fetches
   await Promise.all([
     loadSalonHeaderAndSettings(),
+    loadBarbersList(),
     loadQueueData(true),
     loadServicesCatalog(),
     loadBlacklistData()
@@ -152,30 +193,64 @@ async function bootDashboard() {
 }
 
 /**
- * Authentication Form Listeners (Email & Password Login with Tactile Alerts)
+ * Authentication Form Listeners (Email & Password Login & New Salon Registration)
  */
 function setupAuthEventListeners() {
-  const errorAlert = document.getElementById('login-error-alert');
-  const errorText = document.getElementById('login-error-text');
   const modalContent = DOM.loginGate.querySelector('.modal-content');
 
-  // Clear errors when typing
+  // Switch between Login and Register tabs
+  if (DOM.tabAuthLogin && DOM.tabAuthRegister) {
+    DOM.tabAuthLogin.addEventListener('click', () => {
+      DOM.tabAuthLogin.classList.add('active');
+      DOM.tabAuthRegister.classList.remove('active');
+      DOM.loginForm.style.display = 'block';
+      DOM.registerForm.style.display = 'none';
+    });
+
+    DOM.tabAuthRegister.addEventListener('click', () => {
+      DOM.tabAuthRegister.classList.add('active');
+      DOM.tabAuthLogin.classList.remove('active');
+      DOM.loginForm.style.display = 'none';
+      DOM.registerForm.style.display = 'block';
+    });
+  }
+
+  // Toggle multi-barbers names input on radio change
+  DOM.regBarberTypes.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      if (DOM.regBarbersNamesContainer) {
+        DOM.regBarbersNamesContainer.style.display = e.target.value === 'multi' ? 'block' : 'none';
+      }
+    });
+  });
+
+  // Clear errors when typing in login
   DOM.loginEmail.addEventListener('input', () => {
     DOM.loginEmail.classList.remove('input-error');
-    if (errorAlert) errorAlert.style.display = 'none';
+    if (DOM.loginErrorAlert) DOM.loginErrorAlert.style.display = 'none';
   });
   DOM.loginPassword.addEventListener('input', () => {
     DOM.loginPassword.classList.remove('input-error');
-    if (errorAlert) errorAlert.style.display = 'none';
+    if (DOM.loginErrorAlert) DOM.loginErrorAlert.style.display = 'none';
   });
 
+  // Clear errors when typing in register
+  if (DOM.registerForm) {
+    DOM.registerForm.querySelectorAll('input').forEach(input => {
+      input.addEventListener('input', () => {
+        input.classList.remove('input-error');
+        if (DOM.registerErrorAlert) DOM.registerErrorAlert.style.display = 'none';
+      });
+    });
+  }
+
+  // 1. LOGIN SUBMISSION
   DOM.loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = DOM.loginEmail.value.trim();
     const password = DOM.loginPassword ? DOM.loginPassword.value : '';
 
-    // Clear previous errors
-    if (errorAlert) errorAlert.style.display = 'none';
+    if (DOM.loginErrorAlert) DOM.loginErrorAlert.style.display = 'none';
     DOM.loginEmail.classList.remove('input-error');
     DOM.loginPassword.classList.remove('input-error');
 
@@ -183,9 +258,9 @@ function setupAuthEventListeners() {
       if (!email) DOM.loginEmail.classList.add('input-error');
       if (!password) DOM.loginPassword.classList.add('input-error');
       
-      if (errorAlert && errorText) {
-        errorText.textContent = 'يرجى إدخال البريد الإلكتروني وكلمة المرور.';
-        errorAlert.style.display = 'flex';
+      if (DOM.loginErrorAlert && DOM.loginErrorText) {
+        DOM.loginErrorText.textContent = 'يرجى إدخال البريد الإلكتروني وكلمة المرور.';
+        DOM.loginErrorAlert.style.display = 'flex';
       }
       showToast('يرجى إدخال البريد الإلكتروني وكلمة المرور.', 'error');
       triggerShake();
@@ -202,21 +277,14 @@ function setupAuthEventListeners() {
       showToast('تم تسجيل الدخول بنجاح! أهلاً بك يا فنان ✂️', 'success');
       await bootDashboard();
     } catch (err) {
-      // 1. Show Toast Alert
       showToast(err.message, 'error');
-
-      // 2. Display In-Form Error Alert Box
-      if (errorAlert && errorText) {
-        errorText.textContent = err.message || 'بيانات الدخول غير صحيحة، يرجى المحاولة مرة أخرى.';
-        errorAlert.style.display = 'flex';
+      if (DOM.loginErrorAlert && DOM.loginErrorText) {
+        DOM.loginErrorText.textContent = err.message || 'بيانات الدخول غير صحيحة، يرجى المحاولة مرة أخرى.';
+        DOM.loginErrorAlert.style.display = 'flex';
       }
-
-      // 3. Highlight inputs with red border
       DOM.loginEmail.classList.add('input-error');
       DOM.loginPassword.classList.add('input-error');
       DOM.loginPassword.focus();
-
-      // 4. Physical Shake Animation
       triggerShake();
     } finally {
       submitBtn.disabled = false;
@@ -224,10 +292,75 @@ function setupAuthEventListeners() {
     }
   });
 
+  // 2. REGISTER NEW SALON SUBMISSION
+  if (DOM.registerForm) {
+    DOM.registerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const salonName = DOM.regSalonName.value.trim();
+      const phone = DOM.regPhone.value.trim();
+      const email = DOM.regEmail.value.trim();
+      const password = DOM.regPassword.value.trim();
+      const selectedType = document.querySelector('input[name="reg-barber-type"]:checked')?.value || 'single';
+      const barberNames = DOM.regBarberNames ? DOM.regBarberNames.value.trim() : '';
+
+      if (DOM.registerErrorAlert) DOM.registerErrorAlert.style.display = 'none';
+
+      if (!salonName || !phone || !email || !password) {
+        if (DOM.registerErrorAlert && DOM.registerErrorText) {
+          DOM.registerErrorText.textContent = 'يرجى ملء جميع الحقول الإلزامية.';
+          DOM.registerErrorAlert.style.display = 'flex';
+        }
+        showToast('يرجى ملء جميع الحقول الإلزامية.', 'error');
+        triggerShake();
+        return;
+      }
+
+      if (password.length < 6) {
+        if (DOM.registerErrorAlert && DOM.registerErrorText) {
+          DOM.registerErrorText.textContent = 'يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل.';
+          DOM.registerErrorAlert.style.display = 'flex';
+        }
+        showToast('يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل.', 'error');
+        triggerShake();
+        return;
+      }
+
+      const submitBtn = DOM.btnRegisterSubmit;
+      const originalText = submitBtn.innerHTML;
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = 'جاري إنشاء وتجهيز الصالون... ⏳';
+
+      try {
+        await signUpNewSalon({
+          email,
+          password,
+          salonName,
+          phone,
+          barberType: selectedType,
+          barberNames
+        });
+
+        showToast('تم إنشاء صالونك بنجاح! أهلاً بك في منصة مِقَصْ 💈✨', 'success');
+        await bootDashboard();
+      } catch (err) {
+        showToast(err.message, 'error');
+        if (DOM.registerErrorAlert && DOM.registerErrorText) {
+          DOM.registerErrorText.textContent = err.message || 'تعذر إنشاء الحساب، يرجى المحاولة مجدداً.';
+          DOM.registerErrorAlert.style.display = 'flex';
+        }
+        triggerShake();
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+      }
+    });
+  }
+
   function triggerShake() {
     if (modalContent) {
       modalContent.classList.remove('shake-error');
-      void modalContent.offsetWidth; // Force reflow
+      void modalContent.offsetWidth;
       modalContent.classList.add('shake-error');
     }
   }
@@ -245,12 +378,17 @@ function setupAuthEventListeners() {
  */
 async function loadSalonHeaderAndSettings() {
   try {
-    const settings = await getSalonSettings();
+    const settings = await getSalonForCurrentBarber();
     state.salonSettings = settings;
 
     // Header info
     if (settings.salon_name) DOM.dashSalonName.textContent = settings.salon_name;
     if (settings.total_views) DOM.dashViewsCount.textContent = Number(settings.total_views).toLocaleString('ar-EG');
+
+    // Update Public Client Link
+    if (DOM.btnViewClientPage && settings.slug) {
+      DOM.btnViewClientPage.href = `index.html?s=${settings.slug}`;
+    }
 
     // Update Pause Toggle Button UI
     updatePauseButtonUI(settings.is_paused);
@@ -263,6 +401,170 @@ async function loadSalonHeaderAndSettings() {
   } catch (err) {
     console.warn('Could not load salon settings:', err);
   }
+}
+
+/**
+ * Loads and renders Barbers / Staff List
+ */
+async function loadBarbersList() {
+  if (!state.salonSettings?.id) return;
+
+  try {
+    const barbers = await getBarbers(state.salonSettings.id);
+    state.barbers = barbers;
+
+    // Render in Tab 3 Barbers Management
+    if (DOM.barbersManageList) {
+      DOM.barbersManageList.innerHTML = '';
+
+      if (barbers.length === 0) {
+        DOM.barbersManageList.innerHTML = `
+          <div style="font-size: 0.85rem; color: var(--text-muted); text-align: center; padding: 12px;">
+            لا يوجد حلاقين مسجلين حالياً. اضغط على "+ إضافة حلاق" لإضافة كراسي العمل.
+          </div>
+        `;
+      } else {
+        barbers.forEach(barber => {
+          const item = document.createElement('div');
+          item.style.display = 'flex';
+          item.style.alignItems = 'center';
+          item.style.justifyContent = 'space-between';
+          item.style.padding = '10px 14px';
+          item.style.background = 'rgba(255,255,255,0.03)';
+          item.style.borderRadius = 'var(--radius-sm)';
+          item.style.border = '1px solid var(--border-color)';
+
+          item.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 1.2rem;">💈</span>
+              <div>
+                <div style="font-weight: 700; font-size: 0.95rem;">${barber.name}</div>
+                <div style="font-size: 0.78rem; color: ${barber.is_active ? 'var(--status-completed)' : 'var(--status-cancelled)'};">
+                  ${barber.is_active ? '● متاح للحجز' : '● متوقف مؤقتاً'}
+                </div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-secondary btn-toggle-barber" style="width: auto; padding: 4px 10px; font-size: 0.78rem;">
+                ${barber.is_active ? 'تعطيل ⏸️' : 'تفعيل ▶️'}
+              </button>
+              ${barbers.length > 1 ? `
+                <button class="btn btn-secondary btn-del-barber" style="width: auto; padding: 4px 10px; font-size: 0.78rem; color: #ef4444;">
+                  حذف 🗑️
+                </button>
+              ` : ''}
+            </div>
+          `;
+
+          // Toggle Active/Inactive
+          item.querySelector('.btn-toggle-barber').addEventListener('click', async () => {
+            try {
+              await manageBarber({
+                id: barber.id,
+                salonId: state.salonSettings.id,
+                name: barber.name,
+                isActive: !barber.is_active
+              });
+              showToast(`تم تحديث حالة الحلاق (${barber.name})`, 'success');
+              await loadBarbersList();
+              await loadQueueData(false);
+            } catch (err) {
+              showToast(err.message, 'error');
+            }
+          });
+
+          // Delete Barber (if > 1)
+          const delBtn = item.querySelector('.btn-del-barber');
+          if (delBtn) {
+            delBtn.addEventListener('click', async () => {
+              if (confirm(`هل أنت متأكد من حذف الحلاق (${barber.name})؟`)) {
+                try {
+                  await deleteBarber(barber.id);
+                  showToast('تم حذف الحلاق بنجاح', 'success');
+                  await loadBarbersList();
+                  await loadQueueData(false);
+                } catch (err) {
+                  showToast(err.message, 'error');
+                }
+              }
+            });
+          }
+
+          DOM.barbersManageList.appendChild(item);
+        });
+      }
+    }
+
+    // Render Barber Filter in Queue Tab if > 1 barber
+    if (DOM.queueBarberFilter) {
+      if (barbers.length > 1) {
+        DOM.queueBarberFilter.style.display = 'flex';
+        DOM.queueBarberFilter.innerHTML = '';
+
+        const allPill = document.createElement('button');
+        allPill.className = `btn btn-secondary ${state.selectedBarberFilter === 'all' ? 'active-filter' : ''}`;
+        allPill.style.cssText = 'width: auto; padding: 5px 12px; font-size: 0.8rem; border-radius: 20px;';
+        allPill.textContent = '✨ جميع الكراسي';
+        allPill.addEventListener('click', () => {
+          state.selectedBarberFilter = 'all';
+          updateQueueFilterPills();
+          loadQueueData(false);
+        });
+        DOM.queueBarberFilter.appendChild(allPill);
+
+        barbers.forEach(b => {
+          const pill = document.createElement('button');
+          pill.className = `btn btn-secondary ${state.selectedBarberFilter === b.id ? 'active-filter' : ''}`;
+          pill.style.cssText = 'width: auto; padding: 5px 12px; font-size: 0.8rem; border-radius: 20px;';
+          pill.textContent = `💈 ${b.name}`;
+          pill.addEventListener('click', () => {
+            state.selectedBarberFilter = b.id;
+            updateQueueFilterPills();
+            loadQueueData(false);
+          });
+          DOM.queueBarberFilter.appendChild(pill);
+        });
+      } else {
+        DOM.queueBarberFilter.style.display = 'none';
+        state.selectedBarberFilter = 'all';
+      }
+    }
+
+    // Update Walk-in Barber Selector
+    if (DOM.walkinBarberGroup && DOM.walkinBarberSelect) {
+      if (barbers.length > 1) {
+        DOM.walkinBarberGroup.style.display = 'block';
+        DOM.walkinBarberSelect.innerHTML = barbers
+          .filter(b => b.is_active)
+          .map(b => `<option value="${b.id}">${b.name}</option>`)
+          .join('');
+      } else {
+        DOM.walkinBarberGroup.style.display = 'none';
+      }
+    }
+
+  } catch (err) {
+    console.warn('Error loading barbers:', err);
+  }
+}
+
+function updateQueueFilterPills() {
+  if (!DOM.queueBarberFilter) return;
+  const buttons = DOM.queueBarberFilter.querySelectorAll('button');
+  buttons.forEach(btn => {
+    btn.style.borderColor = 'var(--border-color)';
+    btn.style.background = 'rgba(255,255,255,0.03)';
+  });
+  // Highlight active
+  buttons.forEach(btn => {
+    if (
+      (state.selectedBarberFilter === 'all' && btn.textContent.includes('جميع')) ||
+      state.barbers.some(b => b.id === state.selectedBarberFilter && btn.textContent.includes(b.name))
+    ) {
+      btn.style.borderColor = 'var(--gold-primary)';
+      btn.style.background = 'rgba(212, 175, 55, 0.15)';
+    }
+  });
 }
 
 /**
@@ -293,7 +595,11 @@ async function loadQueueData(showLoading = true) {
   }
 
   try {
-    const appointments = await getTodayAppointments(state.selectedDate);
+    const appointments = await getTodayAppointments(
+      state.selectedDate,
+      state.salonSettings?.id,
+      state.selectedBarberFilter
+    );
     state.todayAppointments = appointments;
 
     renderQueueCards(appointments);
@@ -550,7 +856,8 @@ function renderWalkInModalServices(activeServices) {
 
     btn.addEventListener('click', async () => {
       try {
-        const result = await addWalkInAppointment(s.id, false);
+        const selectedBarberId = DOM.walkinBarberSelect?.value || null;
+        const result = await addWalkInAppointment(s.id, false, state.salonSettings?.id, selectedBarberId);
 
         // Check if Buffer Warning is returned
         if (result && result.warning) {
@@ -563,7 +870,7 @@ function renderWalkInModalServices(activeServices) {
           }
 
           // Force lock chair
-          await addWalkInAppointment(s.id, true);
+          await addWalkInAppointment(s.id, true, state.salonSettings?.id, selectedBarberId);
         }
 
         DOM.walkinModal.style.display = 'none';
@@ -842,11 +1149,69 @@ function setupModalEventListeners() {
     };
 
     try {
-      await saveSalonSettings(updatedSettings);
+      await saveSalonSettings(updatedSettings, state.salonSettings?.id);
       showToast('تم حفظ مواعيد وبيانات الصالون بنجاح ✨', 'success');
       await loadSalonHeaderAndSettings();
     } catch (err) {
       showToast(err.message, 'error');
     }
   });
+
+  // Copy Salon Public Link
+  if (DOM.btnCopySalonLink) {
+    DOM.btnCopySalonLink.addEventListener('click', () => {
+      if (!state.salonSettings?.slug) {
+        showToast('جاري تجهيز رابط الصالون...', 'error');
+        return;
+      }
+      const fullUrl = window.location.origin + window.location.pathname.replace(/dashboard\.html$/i, '') + 'index.html?s=' + state.salonSettings.slug;
+      navigator.clipboard.writeText(fullUrl).then(() => {
+        showToast('تم نسخ رابط حجز الزبائن بنجاح! شاركه مع عملائك 📋💈', 'success');
+      }).catch(() => {
+        prompt('انسخ رابط حجز صالونك:', fullUrl);
+      });
+    });
+  }
+
+  // Barber Modal Listeners
+  if (DOM.btnAddBarberModal) {
+    DOM.btnAddBarberModal.addEventListener('click', () => {
+      DOM.barberModalTitle.textContent = 'إضافة حلاق / كرسي جديد';
+      DOM.barberIdInput.value = '';
+      DOM.barberNameInput.value = '';
+      DOM.barberModal.style.display = 'grid';
+    });
+  }
+
+  if (DOM.btnCloseBarberModal) {
+    DOM.btnCloseBarberModal.addEventListener('click', () => {
+      DOM.barberModal.style.display = 'none';
+    });
+  }
+
+  if (DOM.barberForm) {
+    DOM.barberForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = DOM.barberNameInput.value.trim();
+      const barberId = DOM.barberIdInput.value || null;
+
+      if (!name) return;
+
+      try {
+        await manageBarber({
+          id: barberId,
+          salonId: state.salonSettings?.id,
+          name: name,
+          isActive: true
+        });
+
+        showToast('تم حفظ بيانات الحلاق بنجاح ✨', 'success');
+        DOM.barberModal.style.display = 'none';
+        await loadBarbersList();
+        await loadQueueData(false);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
 }

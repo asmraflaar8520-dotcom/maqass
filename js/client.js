@@ -7,6 +7,7 @@
 import { CONFIG, ARABIC_DAYS } from './config.js';
 import { 
   getSalonSettings, 
+  getBarbers,
   getActiveServices, 
   getBookedSlots, 
   checkBlacklist, 
@@ -23,10 +24,17 @@ import {
   showToast 
 } from './utils.js';
 
+// Read URL parameter for salon slug (?s=SLUG or ?salon=SLUG)
+const urlParams = new URLSearchParams(window.location.search);
+const currentSalonSlug = urlParams.get('s') || urlParams.get('salon') || '';
+
 // Application State
 const state = {
   currentStep: 1,
+  salonSlug: currentSalonSlug,
   salonSettings: null,
+  barbers: [],
+  selectedBarberId: 'any',
   services: [],
   selectedService: null,
   selectedDate: '',
@@ -66,6 +74,8 @@ const DOM = {
 
   // Step 2
   step2ServiceBadge: document.getElementById('step-2-service-badge'),
+  clientBarberSelection: document.getElementById('client-barber-selection'),
+  clientBarbersContainer: document.getElementById('client-barbers-container'),
   bookingDate: document.getElementById('booking-date'),
   dateLocalizedLabel: document.getElementById('date-localized-label'),
   slotsLoading: document.getElementById('slots-loading'),
@@ -78,6 +88,8 @@ const DOM = {
   summaryServiceName: document.getElementById('summary-service-name'),
   summaryDuration: document.getElementById('summary-duration'),
   summaryDate: document.getElementById('summary-date'),
+  summaryBarberItem: document.getElementById('summary-barber-item'),
+  summaryBarberName: document.getElementById('summary-barber-name'),
   summaryTime: document.getElementById('summary-time'),
   bookingForm: document.getElementById('booking-form'),
   clientNameInput: document.getElementById('client-name'),
@@ -90,6 +102,7 @@ const DOM = {
   ticketTime: document.getElementById('ticket-time'),
   ticketClient: document.getElementById('ticket-client'),
   ticketService: document.getElementById('ticket-service'),
+  ticketBarber: document.getElementById('ticket-barber'),
   ticketDate: document.getElementById('ticket-date'),
   btnWhatsAppConfirm: document.getElementById('btn-whatsapp-confirm'),
   btnNewBooking: document.getElementById('btn-new-booking')
@@ -210,23 +223,94 @@ function renderSalonProfileDOM(settings) {
  * Loads and renders salon settings & status (SWR: Instant Cache + Fresh Network)
  */
 async function loadSalonProfile() {
+  const cacheKey = `maqass_cached_salon_${state.salonSlug || 'main'}`;
+
   // 1. Instant cache render (0ms delay)
   try {
-    const cached = localStorage.getItem('maqass_cached_salon_settings');
+    const cached = localStorage.getItem(cacheKey);
     if (cached) renderSalonProfileDOM(JSON.parse(cached));
   } catch {}
 
   // 2. Fresh fetch from network
   try {
-    const settings = await getSalonSettings();
-    localStorage.setItem('maqass_cached_salon_settings', JSON.stringify(settings));
+    const settings = await getSalonSettings(state.salonSlug);
+    localStorage.setItem(cacheKey, JSON.stringify(settings));
     renderSalonProfileDOM(settings);
+
+    // Fetch active barbers for this salon
+    if (settings && settings.id) {
+      const barbers = await getBarbers(settings.id);
+      state.barbers = barbers;
+      renderBarberPillsDOM(barbers);
+    }
   } catch (err) {
     console.warn('Could not load salon settings:', err);
     if (!state.salonSettings) {
       DOM.salonStatus.textContent = 'صالون الحلاقة متاح للحجز';
     }
   }
+}
+
+/**
+ * Renders Barber Selection Pills in Step 2 if salon has multiple barbers
+ */
+function renderBarberPillsDOM(barbers) {
+  if (!DOM.clientBarberSelection || !DOM.clientBarbersContainer) return;
+
+  if (!Array.isArray(barbers) || barbers.length <= 1) {
+    DOM.clientBarberSelection.style.display = 'none';
+    state.selectedBarberId = barbers?.[0]?.id || 'any';
+    return;
+  }
+
+  DOM.clientBarberSelection.style.display = 'block';
+  DOM.clientBarbersContainer.innerHTML = '';
+
+  // 1. Any Barber Pill (Default)
+  const anyBtn = document.createElement('button');
+  anyBtn.type = 'button';
+  anyBtn.className = `btn btn-secondary ${state.selectedBarberId === 'any' ? 'active-filter' : ''}`;
+  anyBtn.style.cssText = 'width: auto; padding: 6px 14px; font-size: 0.85rem; border-radius: 20px;';
+  anyBtn.textContent = '✨ أي حلاق متاح (الأسرع)';
+  anyBtn.addEventListener('click', () => {
+    state.selectedBarberId = 'any';
+    updateBarberPillsSelection();
+    loadAvailableTimeSlots();
+  });
+  DOM.clientBarbersContainer.appendChild(anyBtn);
+
+  // 2. Individual Barbers
+  barbers.forEach(barber => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `btn btn-secondary ${state.selectedBarberId === barber.id ? 'active-filter' : ''}`;
+    btn.style.cssText = 'width: auto; padding: 6px 14px; font-size: 0.85rem; border-radius: 20px;';
+    btn.textContent = `💈 ${barber.name}`;
+    btn.addEventListener('click', () => {
+      state.selectedBarberId = barber.id;
+      updateBarberPillsSelection();
+      loadAvailableTimeSlots();
+    });
+    DOM.clientBarbersContainer.appendChild(btn);
+  });
+}
+
+function updateBarberPillsSelection() {
+  if (!DOM.clientBarbersContainer) return;
+  const buttons = DOM.clientBarbersContainer.querySelectorAll('button');
+  buttons.forEach(btn => {
+    btn.style.borderColor = 'var(--border-color)';
+    btn.style.background = 'rgba(255,255,255,0.03)';
+  });
+  buttons.forEach(btn => {
+    if (
+      (state.selectedBarberId === 'any' && btn.textContent.includes('أي حلاق')) ||
+      state.barbers.some(b => b.id === state.selectedBarberId && btn.textContent.includes(b.name))
+    ) {
+      btn.style.borderColor = 'var(--gold-primary)';
+      btn.style.background = 'rgba(212, 175, 55, 0.15)';
+    }
+  });
 }
 
 /**
@@ -276,7 +360,7 @@ async function loadServices() {
 
   // 2. Fresh fetch from network
   try {
-    const services = await getActiveServices();
+    const services = await getActiveServices(state.salonSettings?.id);
     localStorage.setItem('maqass_cached_services', JSON.stringify(services));
     renderServicesDOM(services);
 
@@ -375,14 +459,16 @@ async function loadAvailableTimeSlots() {
       return;
     }
 
-    const bookedAppointments = await getBookedSlots(state.selectedDate);
+    const bookedAppointments = await getBookedSlots(state.selectedDate, state.salonSettings?.id);
 
     const duration = state.selectedService.duration_minutes || 30;
     const availableSlots = calculateAvailableSlots(
       daySchedule,
       bookedAppointments,
       duration,
-      state.selectedDate
+      state.selectedDate,
+      state.barbers,
+      state.selectedBarberId
     );
 
     DOM.slotsLoading.style.display = 'none';
@@ -458,6 +544,15 @@ function updateSummaryBox() {
   DOM.summaryDuration.textContent = `${state.selectedService.duration_minutes} دقيقة`;
   DOM.summaryDate.textContent = formatDateArabic(state.selectedDate);
   DOM.summaryTime.textContent = `${state.selectedSlot.label} (حتى ${state.selectedSlot.endLabel})`;
+
+  if (DOM.summaryBarberItem && DOM.summaryBarberName) {
+    if (state.selectedSlot.barberName) {
+      DOM.summaryBarberItem.style.display = 'flex';
+      DOM.summaryBarberName.textContent = state.selectedSlot.barberName;
+    } else {
+      DOM.summaryBarberItem.style.display = 'none';
+    }
+  }
 }
 
 /**
@@ -498,6 +593,9 @@ async function handleBookingSubmit(e) {
     DOM.btnSubmitBooking.innerHTML = '<div class="spinner"></div> جاري تسجيل موعدك...';
 
     const payload = {
+      salon_id: state.salonSettings?.id || null,
+      barber_id: state.selectedSlot.barberId || null,
+      barber_name: state.selectedSlot.barberName || null,
       service_id: state.selectedService.id,
       client_name: name,
       client_phone: phone,
@@ -541,12 +639,23 @@ function renderSuccessScreen(appointment, clientName, clientPhone) {
   DOM.ticketService.textContent = state.selectedService.name;
   DOM.ticketDate.textContent = formatDateArabic(appointment.appointment_date);
 
+  if (DOM.ticketBarber) {
+    const barberName = state.selectedSlot?.barberName || appointment.barbers?.name;
+    if (barberName) {
+      DOM.ticketBarber.textContent = `💈 الحلاق: ${barberName}`;
+      DOM.ticketBarber.style.display = 'block';
+    } else {
+      DOM.ticketBarber.style.display = 'none';
+    }
+  }
+
   const barberPhone = state.salonSettings?.phone || '01000000000';
   const whatsappUrl = generateWhatsAppLink({
     clientPhone: barberPhone,
     clientName: clientName,
     salonName: state.salonSettings?.salon_name || CONFIG.APP_NAME,
     serviceName: state.selectedService.name,
+    barberName: state.selectedSlot?.barberName || '',
     date: appointment.appointment_date,
     time: appointment.start_time,
     type: 'confirmation'

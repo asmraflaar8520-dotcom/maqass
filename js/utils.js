@@ -143,21 +143,25 @@ export function normalizePhoneForWhatsApp(phone) {
 }
 
 /**
- * TIME-SLOT CALCULATOR
+ * TIME-SLOT CALCULATOR (Multi-Barber Capacity Aware)
  * Generates available appointment slots by subtracting active bookings from working hours.
- * Uses getEgyptLocalDate and getEgyptLocalTimeMinutes for exact timezone alignment.
+ * Supports multiple chairs/barbers: a slot is available if at least 1 barber is free.
  * 
  * @param {Object} workingDaySchedule - { open: "11:00", close: "23:00", is_off: false }
- * @param {Array} bookedAppointments  - [{ start_time: "14:00", end_time: "14:30", status: "pending" }]
+ * @param {Array} bookedAppointments  - [{ start_time: "14:00", end_time: "14:30", barber_id: "...", status: "pending" }]
  * @param {number} serviceDurationMinutes - e.g. 30
  * @param {string} targetDate - "YYYY-MM-DD"
+ * @param {Array} activeBarbers - [{ id: "...", name: "الأسطى أحمد" }]
+ * @param {string} selectedBarberId - Specific barber UUID or 'any'
  * @returns {Array<Object>} List of available slot objects
  */
 export function calculateAvailableSlots(
   workingDaySchedule,
   bookedAppointments = [],
   serviceDurationMinutes = 30,
-  targetDate = null
+  targetDate = null,
+  activeBarbers = [],
+  selectedBarberId = 'any'
 ) {
   if (!workingDaySchedule || workingDaySchedule.is_off) {
     return [];
@@ -174,6 +178,7 @@ export function calculateAvailableSlots(
   const activeBookings = bookedAppointments
     .filter(app => !['cancelled', 'no_show'].includes(app.status))
     .map(app => ({
+      barber_id: app.barber_id,
       start: timeToMinutes(app.start_time),
       end: timeToMinutes(app.end_time)
     }));
@@ -188,6 +193,9 @@ export function calculateAvailableSlots(
 
   const availableSlots = [];
   const step = CONFIG.DEFAULT_SLOT_INTERVAL_MINUTES || 15;
+  const barbersList = (activeBarbers && activeBarbers.length > 0) 
+    ? activeBarbers 
+    : [{ id: 'default', name: 'الحلاق' }];
 
   for (let slotStart = openMinutes; slotStart + serviceDurationMinutes <= closeMinutes; slotStart += step) {
     const slotEnd = slotStart + serviceDurationMinutes;
@@ -197,12 +205,27 @@ export function calculateAvailableSlots(
       continue;
     }
 
-    // Check collision with any existing active booking
-    const hasCollision = activeBookings.some(booking => {
-      return (slotStart < booking.end && slotEnd > booking.start);
-    });
+    // Determine available barbers for this slot
+    let availableBarber = null;
 
-    if (!hasCollision) {
+    if (selectedBarberId && selectedBarberId !== 'any') {
+      // Specific barber chosen
+      const isOccupied = activeBookings.some(b => 
+        b.barber_id === selectedBarberId && slotStart < b.end && slotEnd > b.start
+      );
+      if (!isOccupied) {
+        availableBarber = barbersList.find(b => b.id === selectedBarberId) || { id: selectedBarberId, name: 'الحلاق المختار' };
+      }
+    } else {
+      // Any barber: Find first available barber for this slot
+      availableBarber = barbersList.find(b => {
+        return !activeBookings.some(app => 
+          app.barber_id === b.id && slotStart < app.end && slotEnd > app.start
+        );
+      });
+    }
+
+    if (availableBarber) {
       const time24 = minutesToTime(slotStart);
       const endTime24 = minutesToTime(slotEnd);
       availableSlots.push({
@@ -211,7 +234,9 @@ export function calculateAvailableSlots(
         label: formatTime12H(time24),
         endLabel: formatTime12H(endTime24),
         startMinutes: slotStart,
-        endMinutes: slotEnd
+        endMinutes: slotEnd,
+        barberId: availableBarber.id,
+        barberName: availableBarber.name
       });
     }
   }
