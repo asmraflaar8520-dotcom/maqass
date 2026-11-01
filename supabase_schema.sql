@@ -444,98 +444,101 @@ GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO authenticated
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS suspended_reason TEXT DEFAULT NULL;
 
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 -- Dedicated table for verified platform administrators
 CREATE TABLE IF NOT EXISTS platform_admins (
-  id         UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  email      TEXT UNIQUE NOT NULL,
-  role       TEXT NOT NULL DEFAULT 'super_admin',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email         TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'super_admin',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Ensure table is independent and has password_hash column
+ALTER TABLE platform_admins DROP CONSTRAINT IF EXISTS platform_admins_id_fkey;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'platform_admins' AND column_name = 'password_hash'
+  ) THEN
+    ALTER TABLE platform_admins ADD COLUMN password_hash TEXT;
+  END IF;
+END $$;
+
+-- Strict RLS: block direct client reads to protect password hashes
 ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON platform_admins FROM anon, authenticated;
 
-CREATE POLICY "Platform admins can view admin records"
-  ON platform_admins FOR SELECT
-  TO authenticated
-  USING (auth.uid() = id);
-
--- One-click provisioning / password reset for platform owner
-CREATE OR REPLACE FUNCTION public.provision_super_admin(p_email TEXT, p_password TEXT)
+-- Super Admin Zero-Friction Login & Auto-Setup RPC
+CREATE OR REPLACE FUNCTION public.super_admin_login(p_email TEXT, p_password TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, extensions
+SET search_path = public, extensions
 AS $$
 DECLARE
-  v_user_id UUID;
   v_clean_email TEXT := lower(trim(p_email));
+  v_admin_count INT;
+  v_admin RECORD;
+  v_token UUID;
 BEGIN
-  IF length(p_password) < 6 THEN
-    RAISE EXCEPTION 'Password must be at least 6 characters';
+  IF v_clean_email = '' OR p_password = '' THEN
+    RETURN jsonb_build_object('success', false, 'message', 'يرجى إدخال البريد الإلكتروني وكلمة المرور.');
   END IF;
 
-  SELECT id INTO v_user_id FROM auth.users WHERE lower(email) = v_clean_email;
+  SELECT count(*) INTO v_admin_count FROM platform_admins;
 
-  IF v_user_id IS NULL THEN
-    v_user_id := gen_random_uuid();
-    INSERT INTO auth.users (
-      id,
-      instance_id,
-      email,
-      encrypted_password,
-      email_confirmed_at,
-      raw_app_meta_data,
-      raw_user_meta_data,
-      created_at,
-      updated_at,
-      role,
-      aud
-    ) VALUES (
-      v_user_id,
-      '00000000-0000-0000-0000-000000000000',
-      v_clean_email,
-      crypt(p_password, gen_salt('bf')),
-      now(),
-      '{"provider":"email","providers":["email"]}'::jsonb,
-      '{"role":"super_admin"}'::jsonb,
-      now(),
-      now(),
-      'authenticated',
-      'authenticated'
+  -- 1. Auto First-Time Setup: If no admin exists yet, register this first user as the platform owner!
+  IF v_admin_count = 0 THEN
+    INSERT INTO platform_admins (email, password_hash)
+    VALUES (v_clean_email, crypt(p_password, gen_salt('bf')))
+    RETURNING id INTO v_token;
+
+    RETURN jsonb_build_object(
+      'success', true,
+      'token', v_token,
+      'email', v_clean_email,
+      'is_initial_setup', true,
+      'message', 'تم إنشاء حسابك وتأمينه كمالك رئيسي للمنصة بنجاح 👑'
     );
-  ELSE
-    UPDATE auth.users
-    SET encrypted_password = crypt(p_password, gen_salt('bf')),
-        email_confirmed_at = COALESCE(email_confirmed_at, now()),
-        updated_at = now()
-    WHERE id = v_user_id;
   END IF;
 
-  INSERT INTO platform_admins (id, email, role)
-  VALUES (v_user_id, v_clean_email, 'super_admin')
-  ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
+  -- 2. Normal Login: lookup by email
+  SELECT id, email, password_hash INTO v_admin
+  FROM platform_admins
+  WHERE lower(email) = v_clean_email;
+
+  IF v_admin.id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'message', 'البريد الإلكتروني غير مسجل كمالك للمنصة.');
+  END IF;
+
+  -- 3. Verify Bcrypt password hash
+  IF v_admin.password_hash != crypt(p_password, v_admin.password_hash) THEN
+    RETURN jsonb_build_object('success', false, 'message', 'كلمة المرور غير صحيحة.');
+  END IF;
 
   RETURN jsonb_build_object(
-    'success', true, 
-    'message', 'Super admin provisioned successfully', 
-    'user_id', v_user_id,
-    'email', v_clean_email
+    'success', true,
+    'token', v_admin.id,
+    'email', v_admin.email
   );
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.provision_super_admin(TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_login(TEXT, TEXT) TO anon, authenticated;
 
--- Super admin overview function: accessible ONLY by authenticated platform_admins
-CREATE OR REPLACE FUNCTION public.super_admin_get_overview()
+-- Overview function: accessible ONLY with a valid admin token
+CREATE OR REPLACE FUNCTION public.super_admin_get_overview(p_token UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, extensions
+SET search_path = public, extensions
 AS $$
 DECLARE
-  v_caller_id UUID := auth.uid();
-  v_is_admin BOOLEAN := FALSE;
   v_salons JSONB;
   v_total_salons INT;
   v_active_salons INT;
@@ -544,16 +547,8 @@ DECLARE
   v_total_appointments INT;
   v_today_appointments INT;
 BEGIN
-  IF v_caller_id IS NULL THEN
-    RAISE EXCEPTION 'Unauthorized: User is not authenticated' USING ERRCODE = '42501';
-  END IF;
-
-  SELECT EXISTS (
-    SELECT 1 FROM platform_admins WHERE id = v_caller_id
-  ) INTO v_is_admin;
-
-  IF NOT v_is_admin THEN
-    RAISE EXCEPTION 'Forbidden: User is not a registered platform super admin' USING ERRCODE = '42501';
+  IF p_token IS NULL OR NOT EXISTS (SELECT 1 FROM platform_admins WHERE id = p_token) THEN
+    RAISE EXCEPTION 'Unauthorized: Invalid or expired admin session' USING ERRCODE = '42501';
   END IF;
 
   SELECT count(*) INTO v_total_salons FROM salons;
@@ -598,8 +593,9 @@ BEGIN
 END;
 $$;
 
--- Super admin toggle lock function: accessible ONLY by authenticated platform_admins
+-- Toggle lock function: accessible ONLY with a valid admin token
 CREATE OR REPLACE FUNCTION public.super_admin_toggle_salon(
+  p_token UUID,
   p_salon_id UUID,
   p_suspend BOOLEAN,
   p_reason TEXT DEFAULT NULL
@@ -607,22 +603,11 @@ CREATE OR REPLACE FUNCTION public.super_admin_toggle_salon(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, extensions
+SET search_path = public, extensions
 AS $$
-DECLARE
-  v_caller_id UUID := auth.uid();
-  v_is_admin BOOLEAN := FALSE;
 BEGIN
-  IF v_caller_id IS NULL THEN
-    RAISE EXCEPTION 'Unauthorized: User is not authenticated' USING ERRCODE = '42501';
-  END IF;
-
-  SELECT EXISTS (
-    SELECT 1 FROM platform_admins WHERE id = v_caller_id
-  ) INTO v_is_admin;
-
-  IF NOT v_is_admin THEN
-    RAISE EXCEPTION 'Forbidden: User is not a registered platform super admin' USING ERRCODE = '42501';
+  IF p_token IS NULL OR NOT EXISTS (SELECT 1 FROM platform_admins WHERE id = p_token) THEN
+    RAISE EXCEPTION 'Unauthorized: Invalid or expired admin session' USING ERRCODE = '42501';
   END IF;
 
   UPDATE salons
@@ -635,8 +620,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.super_admin_get_overview() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(UUID, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_get_overview(UUID) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(UUID, UUID, BOOLEAN, TEXT) TO anon, authenticated;
 
 -- =============================================================================
 -- 13. REAL HARD LOCKDOWN TRIGGER (Blocks any booking for suspended salons)

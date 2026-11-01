@@ -77,7 +77,15 @@ async function checkAuthAndBoot() {
   const hasSession = await getSuperAdminSession();
   if (hasSession) {
     unlockHub();
-    await loadDashboardData();
+    try {
+      await loadDashboardData();
+    } catch (err) {
+      console.warn('Session expired or invalid, returning to login gate:', err);
+      await signOutSuperAdmin();
+      DOM.superGate.style.display = 'flex';
+      DOM.superWrapper.style.display = 'none';
+      if (DOM.superEmail) DOM.superEmail.focus();
+    }
   } else {
     DOM.superGate.style.display = 'flex';
     DOM.superWrapper.style.display = 'none';
@@ -109,10 +117,10 @@ function setupEventListeners() {
     if (DOM.superErrorAlert) DOM.superErrorAlert.style.display = 'none';
 
     try {
-      await loginSuperAdmin({ email, password });
+      const res = await loginSuperAdmin({ email, password });
       unlockHub();
       await loadDashboardData();
-      showToast('مرحباً بك يا مالك المنصة! تم الدخول بنجاح 👑', 'success');
+      showToast(res?.message || 'مرحباً بك يا مالك المنصة! تم الدخول بنجاح 👑', 'success');
     } catch (err) {
       if (DOM.superErrorAlert && DOM.superErrorText) {
         DOM.superErrorText.textContent = err.message || 'بيانات الدخول غير صحيحة.';

@@ -1582,7 +1582,7 @@ export async function unblockClient(clientPhone) {
 export const SUPER_ADMIN_STORAGE_KEY = 'maqass_super_admin_session';
 
 /**
- * Logs in the Super Admin using official Supabase Authentication
+ * Logs in the Super Admin using secure pgcrypto Bcrypt RPC authentication
  * @param {Object} credentials - { email, password }
  * @returns {Promise<Object>}
  */
@@ -1593,33 +1593,37 @@ export async function loginSuperAdmin({ email, password }) {
   }
 
   if (isDemoMode()) {
-    sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, cleanEmail);
-    return { email: cleanEmail };
+    const demoSession = { token: '00000000-0000-0000-0000-000000000000', email: cleanEmail };
+    sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, JSON.stringify(demoSession));
+    return demoSession;
   }
 
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: cleanEmail,
-    password: password
-  });
+  try {
+    const { data, error } = await supabase.rpc('super_admin_login', {
+      p_email: cleanEmail,
+      p_password: password
+    });
 
-  if (error) {
-    throw new BookingError('فشل الدخول: ' + (error.message.includes('Invalid') ? 'البريد أو كلمة المرور غير صحيحة.' : error.message));
+    if (error) {
+      throw new BookingError('فشل الدخول: ' + (error.message || 'تعذر التحقق من البيانات.'));
+    }
+
+    if (!data || !data.success) {
+      throw new BookingError(data?.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة.');
+    }
+
+    const sessionData = {
+      token: data.token,
+      email: data.email,
+      message: data.message
+    };
+
+    sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, JSON.stringify(sessionData));
+    return sessionData;
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError(err.message || 'تعذر الاتصال بقاعدة البيانات.');
   }
-
-  // Verify that the authenticated user is an authorized platform super admin
-  const { data: adminRecord, error: adminErr } = await supabase
-    .from('platform_admins')
-    .select('role')
-    .eq('id', data.user.id)
-    .maybeSingle();
-
-  if (adminErr || !adminRecord) {
-    await supabase.auth.signOut();
-    throw new BookingError('عذراً، هذا الحساب ليس لديه صلاحيات مالك المنصة.');
-  }
-
-  sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, cleanEmail);
-  return data.user;
 }
 
 /**
@@ -1627,23 +1631,29 @@ export async function loginSuperAdmin({ email, password }) {
  * @returns {Promise<boolean>}
  */
 export async function getSuperAdminSession() {
-  if (isDemoMode()) {
-    return !!sessionStorage.getItem(SUPER_ADMIN_STORAGE_KEY);
-  }
+  const sessionRaw = sessionStorage.getItem(SUPER_ADMIN_STORAGE_KEY);
+  if (!sessionRaw) return false;
 
   try {
-    const { data } = await supabase.auth.getSession();
-    if (!data?.session?.user) return false;
-
-    const { data: adminRecord } = await supabase
-      .from('platform_admins')
-      .select('role')
-      .eq('id', data.session.user.id)
-      .maybeSingle();
-
-    return !!adminRecord;
+    const session = JSON.parse(sessionRaw);
+    return !!(session && session.token);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Helper to get the active session token
+ * @returns {string|null}
+ */
+export function getSuperAdminToken() {
+  const sessionRaw = sessionStorage.getItem(SUPER_ADMIN_STORAGE_KEY);
+  if (!sessionRaw) return null;
+  try {
+    const session = JSON.parse(sessionRaw);
+    return session?.token || null;
+  } catch {
+    return null;
   }
 }
 
@@ -1652,11 +1662,6 @@ export async function getSuperAdminSession() {
  */
 export async function signOutSuperAdmin() {
   sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
-  try {
-    await supabase.auth.signOut();
-  } catch {
-    // Ignore sign out errors
-  }
 }
 
 /**
@@ -1666,13 +1671,12 @@ export async function signOutSuperAdmin() {
 export async function getSuperAdminOverview() {
   if (isDemoMode()) {
     const store = getDemoStore();
-    const salons = [store.salon_settings];
     return {
       success: true,
       metrics: {
         total_salons: 1,
-        active_salons: store.salon_settings.is_suspended ? 0 : 1,
-        suspended_salons: store.salon_settings.is_suspended ? 1 : 0,
+        active_salons: store.salon_settings?.is_suspended ? 0 : 1,
+        suspended_salons: store.salon_settings?.is_suspended ? 1 : 0,
         total_barbers: 1,
         total_appointments: store.appointments.length,
         today_appointments: store.appointments.length
@@ -1686,12 +1690,20 @@ export async function getSuperAdminOverview() {
     };
   }
 
+  const token = getSuperAdminToken();
+  if (!token) {
+    throw new BookingError('يرجى تسجيل الدخول كمالك للمنصة.');
+  }
+
   try {
-    const { data, error } = await supabase.rpc('super_admin_get_overview');
+    const { data, error } = await supabase.rpc('super_admin_get_overview', {
+      p_token: token
+    });
 
     if (error) {
-      if (error.message?.includes('Unauthorized') || error.message?.includes('Forbidden')) {
-        throw new BookingError('غير مصرح لك بالوصول: يرجى تسجيل الدخول بحساب مالك المنصة.');
+      if (error.message?.includes('Unauthorized') || error.code === '42501') {
+        sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
+        throw new BookingError('انتهت صلاحية الجلسة أو غير مصرح لك: يرجى تسجيل الدخول مجدداً.');
       }
       throw new BookingError(error.message || 'تعذر جلب بيانات الصالونات.');
     }
@@ -1708,7 +1720,7 @@ export async function getSuperAdminOverview() {
 }
 
 /**
- * Toggles a salon suspension status via secure PostgreSQL RPC (auth session verified)
+ * Toggles a salon suspension status via secure PostgreSQL RPC (token verified)
  * @param {Object} params - { salonId, suspend, reason }
  * @returns {Promise<boolean>}
  */
@@ -1723,16 +1735,22 @@ export async function toggleSalonSuspension({ salonId, suspend, reason = null })
     return true;
   }
 
+  const token = getSuperAdminToken();
+  if (!token) {
+    throw new BookingError('يرجى تسجيل الدخول كمالك للمنصة أولاً.');
+  }
+
   try {
     const { data, error } = await supabase.rpc('super_admin_toggle_salon', {
+      p_token: token,
       p_salon_id: salonId,
       p_suspend: suspend,
       p_reason: reason
     });
 
     if (error) {
-      if (error.message?.includes('Unauthorized') || error.message?.includes('Forbidden')) {
-        throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء: الحساب ليس لديه صلاحية سوبر أدمن.');
+      if (error.message?.includes('Unauthorized') || error.code === '42501') {
+        throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء: الجلسة غير صالحة.');
       }
       if (error.message?.includes('is_suspended') || error.code === '42703') {
         throw new BookingError('قاعدة البيانات ينقصها عمود is_suspended. يرجى تشغيل كود SQL في Supabase أولاً لتفعيل خاصية القفل والفتح الحقيقية.');
