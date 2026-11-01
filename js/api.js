@@ -1583,86 +1583,70 @@ export const SUPER_ADMIN_STORAGE_KEY = 'maqass_super_admin_session';
 
 /**
  * Validates Master Key and returns Super Admin overview & salon directory
+ * Checks key securely via server-side PostgreSQL RPC (Zero hardcoded secrets in frontend)
  * @param {string} masterKey
  * @returns {Promise<Object>}
  */
 export async function getSuperAdminOverview(masterKey) {
-  if (!masterKey || masterKey.trim() !== 'maqass-owner-2026') {
-    throw new BookingError('رمز المرور الخاص بالسوبر أدمن غير صحيح.');
+  const cleanKey = (masterKey || '').trim();
+  if (!cleanKey) {
+    throw new BookingError('يرجى إدخال رمز المرور السري للمالك.');
   }
 
-  // 1. Try secure RPC first
-  try {
-    const { data, error } = await supabase.rpc('super_admin_get_overview', {
-      p_master_key: masterKey.trim()
-    });
-    if (!error && data && data.success) {
-      return data;
-    }
-  } catch (_) {
-    // Fall back to direct query
-  }
-
-  // 2. Direct client fallback query
-  try {
-    const [salonsRes, barbersRes, appsRes] = await Promise.all([
-      supabase.from('salons').select('*').order('created_at', { ascending: false }),
-      supabase.from('barbers').select('*'),
-      supabase.from('appointments').select('id, salon_id, appointment_date')
-    ]);
-
-    const salons = salonsRes.data || [];
-    const barbers = barbersRes.data || [];
-    const apps = appsRes.data || [];
-
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todayAppsCount = apps.filter(a => a.appointment_date === todayStr).length;
-
-    const enrichedSalons = salons.map(s => {
-      const salonBarbers = barbers.filter(b => b.salon_id === s.id && b.is_active);
-      const salonApps = apps.filter(a => a.salon_id === s.id);
-      return {
-        id: s.id,
-        salon_name: s.salon_name,
-        slug: s.slug,
-        phone: s.phone,
-        is_suspended: !!s.is_suspended,
-        suspended_reason: s.suspended_reason || null,
-        is_paused: !!s.is_paused,
-        total_views: s.total_views || 0,
-        created_at: s.created_at,
-        barbers_count: salonBarbers.length,
-        barber_names: salonBarbers.map(b => b.name).join('، ') || 'الحلاق الرئيسي',
-        appointments_count: salonApps.length
-      };
-    });
-
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const salons = [store.salon_settings];
     return {
       success: true,
       metrics: {
-        total_salons: salons.length,
-        active_salons: salons.filter(s => !s.is_suspended).length,
-        suspended_salons: salons.filter(s => !!s.is_suspended).length,
-        total_barbers: barbers.filter(b => b.is_active).length,
-        total_appointments: apps.length,
-        today_appointments: todayAppsCount
+        total_salons: 1,
+        active_salons: store.salon_settings.is_suspended ? 0 : 1,
+        suspended_salons: store.salon_settings.is_suspended ? 1 : 0,
+        total_barbers: 1,
+        total_appointments: store.appointments.length,
+        today_appointments: store.appointments.length
       },
-      salons: enrichedSalons
+      salons: [{
+        ...store.salon_settings,
+        barbers_count: 1,
+        barber_names: 'الحلاق الرئيسي',
+        appointments_count: store.appointments.length
+      }]
     };
-  } catch (err) {
-    console.error('Super Admin fallback query error:', err);
-    throw new BookingError('تعذر جلب بيانات الصالونات، يرجى المحاولة لاحقاً.');
   }
+
+  try {
+    const { data, error } = await supabase.rpc('super_admin_get_overview', {
+      p_master_key: cleanKey
+    });
+
+    if (error) {
+      if (error.message?.includes('Unauthorized') || error.message?.includes('Invalid')) {
+        throw new BookingError('رمز المرور السري غير صحيح.');
+      }
+      throw new BookingError(error.message || 'تعذر التحقق من رمز المرور.');
+    }
+
+    if (data && data.success) {
+      return data;
+    }
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError(err.message || 'تعذر الاتصال بقاعدة البيانات.');
+  }
+
+  throw new BookingError('رمز المرور السري غير صحيح.');
 }
 
 /**
- * Toggles a salon suspension status
+ * Toggles a salon suspension status via secure PostgreSQL RPC
  * @param {Object} params - { masterKey, salonId, suspend, reason }
  * @returns {Promise<boolean>}
  */
 export async function toggleSalonSuspension({ masterKey, salonId, suspend, reason = null }) {
-  if (!masterKey || masterKey.trim() !== 'maqass-owner-2026') {
-    throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء.');
+  const cleanKey = (masterKey || '').trim();
+  if (!cleanKey) {
+    throw new BookingError('يرجى إدخال رمز المرور السري للمالك.');
   }
 
   if (isDemoMode()) {
@@ -1677,33 +1661,30 @@ export async function toggleSalonSuspension({ masterKey, salonId, suspend, reaso
 
   try {
     const { data, error } = await supabase.rpc('super_admin_toggle_salon', {
-      p_master_key: masterKey.trim(),
+      p_master_key: cleanKey,
       p_salon_id: salonId,
       p_suspend: suspend,
       p_reason: reason
     });
-    if (!error && data?.success) {
+
+    if (error) {
+      if (error.message?.includes('Unauthorized') || error.message?.includes('Invalid')) {
+        throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء: رمز المرور غير صحيح.');
+      }
+      if (error.message?.includes('is_suspended') || error.code === '42703') {
+        throw new BookingError('قاعدة البيانات ينقصها عمود is_suspended. يرجى تشغيل كود SQL في Supabase أولاً لتفعيل خاصية القفل والفتح الحقيقية.');
+      }
+      throw new BookingError('فشل تعديل حالة قفل الصالون: ' + error.message);
+    }
+
+    if (data && data.success) {
       return true;
     }
-  } catch (_) {
-    // Fall back to direct update
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError(err.message || 'فشل تعديل حالة قفل الصالون.');
   }
 
-  const { error } = await supabase
-    .from('salons')
-    .update({
-      is_suspended: suspend,
-      suspended_reason: suspend ? (reason || 'معلق بأمر الإدارة') : null,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', salonId);
-
-  if (error) {
-    if (error.message?.includes('is_suspended') || error.code === '42703') {
-      throw new BookingError('قاعدة البيانات ينقصها عمود is_suspended. يرجى تشغيل كود SQL في Supabase أولاً لتفعيل خاصية القفل والفتح الحقيقية.');
-    }
-    throw new BookingError('فشل تعديل حالة قفل الصالون: ' + error.message);
-  }
   return true;
 }
 
