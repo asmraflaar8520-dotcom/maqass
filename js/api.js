@@ -580,6 +580,9 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
   });
 
   if (authErr) {
+    if (authErr.message.toLowerCase().includes('already registered')) {
+      throw new BookingError('هذا البريد الإلكتروني مسجل بالفعل! يرجى الانتقال إلى تبويب (دخول صالون مسجل) لتسجيل الدخول.');
+    }
     throw new BookingError('فشل إنشاء الحساب: ' + authErr.message);
   }
 
@@ -588,15 +591,46 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     throw new BookingError('تعذر الحصول على بيانات المستخدم بعد التسجيل.');
   }
 
+  // Detect if user already existed prior to this call (Supabase returns empty identities array)
+  const isExistingUser = user.identities && user.identities.length === 0;
+
+  let activeUser = user;
+
   // Ensure active session
   if (!authData.session) {
     const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: cleanPassword
     });
-    if (signInErr && !signInErr.message.includes('Email not confirmed')) {
+
+    if (signInErr) {
+      if (isExistingUser) {
+        throw new BookingError('هذا البريد مسجل مسبقاً! إذا كنت صاحب الحساب، يرجى إدخال كلمة المرور الصحيحة لحسابك، أو الانتقال لتبويب (دخول صالون مسجل).');
+      }
+      if (signInErr.message.includes('Invalid login credentials')) {
+        throw new BookingError('يرجى التأكد من تعطيل خيار (Confirm email) في إعدادات Supabase، أو تفعيل الحساب من رابط الإيميل المرسل إليك.');
+      }
       throw new BookingError(signInErr.message);
     }
+
+    if (signInData?.user) {
+      activeUser = signInData.user;
+    }
+  }
+
+  // Check if this user already has an existing registered salon
+  const { data: existingSalon } = await supabase
+    .from('salons')
+    .select('*')
+    .eq('owner_id', activeUser.id)
+    .maybeSingle();
+
+  if (existingSalon) {
+    localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, existingSalon.id);
+    localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, existingSalon.slug);
+    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+    const existingBarbers = await getBarbers(existingSalon.id);
+    return { salon: existingSalon, barbers: existingBarbers };
   }
 
   // 2. Generate unique random slug
@@ -607,7 +641,7 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
   const { data: salon, error: salonErr } = await supabase
     .from('salons')
     .insert({
-      owner_id: user.id,
+      owner_id: activeUser.id,
       slug: slug,
       salon_name: cleanName,
       phone: cleanPhone || '01000000000',
