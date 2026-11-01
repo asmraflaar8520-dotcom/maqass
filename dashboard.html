@@ -140,6 +140,17 @@
   <!-- ========================================== -->
   <div id="dashboard-wrapper" class="container-wide" style="display: none;">
     
+    <!-- Salon Suspension Notice (Hidden by default, shown when super admin suspends salon) -->
+    <div id="salon-suspended-alert" class="pause-banner" style="display: none; background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.6); color: #fca5a5; margin-bottom: 20px;">
+      <span style="font-size: 1.6rem;">🔒</span>
+      <div>
+        <div style="font-weight: 800; color: #f87171; font-size: 1rem;">تم تجميد حساب هذا الصالون من قِبل إدارة منصة مِقَصْ</div>
+        <div style="font-size: 0.85rem; opacity: 0.95; margin-top: 2px;" id="salon-suspended-reason">
+          الحساب معلق حالياً ولا يمكن للزبائن الحجز. يرجى التواصل مع إدارة المنصة فوراً لتسوية وتفعيل الحساب.
+        </div>
+      </div>
+    </div>
+
     <!-- Top Bar with Salon Profile & Quick Stats -->
     <header class="brand-header">
       <div class="brand-info">

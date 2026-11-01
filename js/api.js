@@ -1489,3 +1489,146 @@ export async function unblockClient(clientPhone) {
     throw new BookingError('فشل في فك حظر هذا الرقم.');
   }
 }
+
+// =============================================================================
+// SUPER ADMIN HUB API (PLATFORM OWNER LEVEL)
+// =============================================================================
+
+export const SUPER_ADMIN_STORAGE_KEY = 'maqass_super_admin_session';
+
+/**
+ * Validates Master Key and returns Super Admin overview & salon directory
+ * @param {string} masterKey
+ * @returns {Promise<Object>}
+ */
+export async function getSuperAdminOverview(masterKey) {
+  if (!masterKey || masterKey.trim() !== 'maqass-owner-2026') {
+    throw new BookingError('رمز المرور الخاص بالسوبر أدمن غير صحيح.');
+  }
+
+  // 1. Try secure RPC first
+  try {
+    const { data, error } = await supabase.rpc('super_admin_get_overview', {
+      p_master_key: masterKey.trim()
+    });
+    if (!error && data && data.success) {
+      return data;
+    }
+  } catch (_) {
+    // Fall back to direct query
+  }
+
+  // 2. Direct client fallback query
+  try {
+    const [salonsRes, barbersRes, appsRes] = await Promise.all([
+      supabase.from('salons').select('*').order('created_at', { ascending: false }),
+      supabase.from('barbers').select('*'),
+      supabase.from('appointments').select('id, salon_id, appointment_date')
+    ]);
+
+    const salons = salonsRes.data || [];
+    const barbers = barbersRes.data || [];
+    const apps = appsRes.data || [];
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayAppsCount = apps.filter(a => a.appointment_date === todayStr).length;
+
+    const enrichedSalons = salons.map(s => {
+      const salonBarbers = barbers.filter(b => b.salon_id === s.id && b.is_active);
+      const salonApps = apps.filter(a => a.salon_id === s.id);
+      return {
+        id: s.id,
+        salon_name: s.salon_name,
+        slug: s.slug,
+        phone: s.phone,
+        is_suspended: !!s.is_suspended,
+        suspended_reason: s.suspended_reason || null,
+        is_paused: !!s.is_paused,
+        total_views: s.total_views || 0,
+        created_at: s.created_at,
+        barbers_count: salonBarbers.length,
+        barber_names: salonBarbers.map(b => b.name).join('، ') || 'الحلاق الرئيسي',
+        appointments_count: salonApps.length
+      };
+    });
+
+    return {
+      success: true,
+      metrics: {
+        total_salons: salons.length,
+        active_salons: salons.filter(s => !s.is_suspended).length,
+        suspended_salons: salons.filter(s => !!s.is_suspended).length,
+        total_barbers: barbers.filter(b => b.is_active).length,
+        total_appointments: apps.length,
+        today_appointments: todayAppsCount
+      },
+      salons: enrichedSalons
+    };
+  } catch (err) {
+    console.error('Super Admin fallback query error:', err);
+    throw new BookingError('تعذر جلب بيانات الصالونات، يرجى المحاولة لاحقاً.');
+  }
+}
+
+/**
+ * Toggles a salon suspension status
+ * @param {Object} params - { masterKey, salonId, suspend, reason }
+ * @returns {Promise<boolean>}
+ */
+export async function toggleSalonSuspension({ masterKey, salonId, suspend, reason = null }) {
+  if (!masterKey || masterKey.trim() !== 'maqass-owner-2026') {
+    throw new BookingError('غير مصرح لك بتنفيذ هذا الإجراء.');
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('super_admin_toggle_salon', {
+      p_master_key: masterKey.trim(),
+      p_salon_id: salonId,
+      p_suspend: suspend,
+      p_reason: reason
+    });
+    if (!error && data?.success) {
+      return true;
+    }
+  } catch (_) {
+    // Fall back to direct update
+  }
+
+  const { error } = await supabase
+    .from('salons')
+    .update({
+      is_suspended: suspend,
+      suspended_reason: suspend ? (reason || 'معلق بأمر الإدارة') : null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', salonId);
+
+  if (error) {
+    throw new BookingError('فشل تعديل حالة قفل الصالون: ' + error.message);
+  }
+  return true;
+}
+
+/**
+ * Fetches appointments of a specific salon for inspection
+ * @param {string} salonId
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getSalonAppointmentsAdmin(salonId) {
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select('*, services(name, price, duration_minutes), barbers(name)')
+      .eq('salon_id', salonId)
+      .order('appointment_date', { ascending: false })
+      .order('appointment_time', { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    console.error('Error fetching salon appointments for inspection:', err);
+    return [];
+  }
+}
+

@@ -50,6 +50,8 @@ const DOM = {
   salonStatus: document.getElementById('salon-status-indicator'),
   viewsCount: document.getElementById('views-count'),
   pauseBanner: document.getElementById('pause-banner'),
+  suspendedBanner: document.getElementById('suspended-banner'),
+  suspendedDesc: document.getElementById('suspended-desc'),
   bookingContainer: document.getElementById('booking-container'),
   setupModal: document.getElementById('setup-modal'),
   btnSaveSetup: document.getElementById('btn-save-setup'),
@@ -205,7 +207,23 @@ function renderSalonProfileDOM(settings) {
     DOM.viewsCount.textContent = Number(settings.total_views).toLocaleString('ar-EG');
   }
 
-  // Check operational status
+  // Check operational & suspension status
+  if (settings.is_suspended) {
+    if (DOM.suspendedBanner) {
+      DOM.suspendedBanner.style.display = 'flex';
+      if (DOM.suspendedDesc && settings.suspended_reason) {
+        DOM.suspendedDesc.textContent = settings.suspended_reason;
+      }
+    }
+    if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
+    DOM.bookingContainer.style.display = 'none';
+    DOM.salonStatus.textContent = 'الصالون متوقف حالياً 🔒';
+    DOM.salonStatus.style.color = 'var(--status-cancelled)';
+    return;
+  } else if (DOM.suspendedBanner) {
+    DOM.suspendedBanner.style.display = 'none';
+  }
+
   if (settings.is_paused) {
     DOM.pauseBanner.style.display = 'flex';
     DOM.bookingContainer.style.display = 'none';

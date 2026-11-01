@@ -449,6 +449,24 @@ async function loadSalonHeaderAndSettings() {
       DOM.btnViewClientPage.href = `index.html?s=${settings.slug}`;
     }
 
+    // Check Super Admin Suspension
+    const suspAlert = document.getElementById('salon-suspended-alert');
+    const suspReason = document.getElementById('salon-suspended-reason');
+    if (settings.is_suspended) {
+      if (suspAlert) {
+        suspAlert.style.display = 'flex';
+        if (suspReason && settings.suspended_reason) {
+          suspReason.textContent = `السبب: ${settings.suspended_reason} — يرجى التواصل مع إدارة منصة مِقَصْ لتسوية وتفعيل الحساب.`;
+        }
+      }
+      if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = true;
+      if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = true;
+    } else if (suspAlert) {
+      suspAlert.style.display = 'none';
+      if (DOM.btnTogglePause) DOM.btnTogglePause.disabled = false;
+      if (DOM.btnOpenWalkinModal) DOM.btnOpenWalkinModal.disabled = false;
+    }
+
     // Update Pause Toggle Button UI
     updatePauseButtonUI(settings.is_paused);
 

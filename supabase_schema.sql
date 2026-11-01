@@ -432,3 +432,100 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO anon;
 GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO authenticated;
+
+-- =============================================================================
+-- 12. SUPER ADMIN OWNER OVERVIEW & CONTROL (Lock & Oversee Salons)
+-- =============================================================================
+ALTER TABLE salons ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE salons ADD COLUMN IF NOT EXISTS suspended_reason TEXT DEFAULT NULL;
+
+CREATE OR REPLACE FUNCTION public.super_admin_get_overview(p_master_key TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+  v_salons JSONB;
+  v_total_salons INT;
+  v_active_salons INT;
+  v_suspended_salons INT;
+  v_total_barbers INT;
+  v_total_appointments INT;
+  v_today_appointments INT;
+BEGIN
+  IF p_master_key != 'maqass-owner-2026' THEN
+    RAISE EXCEPTION 'Unauthorized: Invalid master admin credentials';
+  END IF;
+
+  SELECT count(*) INTO v_total_salons FROM salons;
+  SELECT count(*) INTO v_active_salons FROM salons WHERE is_suspended = FALSE;
+  SELECT count(*) INTO v_suspended_salons FROM salons WHERE is_suspended = TRUE;
+  SELECT count(*) INTO v_total_barbers FROM barbers WHERE is_active = TRUE;
+  SELECT count(*) INTO v_total_appointments FROM appointments;
+  SELECT count(*) INTO v_today_appointments FROM appointments WHERE appointment_date = CURRENT_DATE;
+
+  SELECT jsonb_agg(
+    jsonb_build_object(
+      'id', s.id,
+      'salon_name', s.salon_name,
+      'slug', s.slug,
+      'phone', s.phone,
+      'is_suspended', COALESCE(s.is_suspended, FALSE),
+      'suspended_reason', s.suspended_reason,
+      'is_paused', s.is_paused,
+      'total_views', s.total_views,
+      'created_at', s.created_at,
+      'owner_email', u.email,
+      'barbers_count', (SELECT count(*) FROM barbers b WHERE b.salon_id = s.id AND b.is_active = TRUE),
+      'barber_names', (SELECT string_agg(b.name, '، ') FROM barbers b WHERE b.salon_id = s.id AND b.is_active = TRUE),
+      'appointments_count', (SELECT count(*) FROM appointments a WHERE a.salon_id = s.id)
+    ) ORDER BY s.created_at DESC
+  ) INTO v_salons
+  FROM salons s
+  LEFT JOIN auth.users u ON u.id = s.owner_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'metrics', jsonb_build_object(
+      'total_salons', v_total_salons,
+      'active_salons', v_active_salons,
+      'suspended_salons', v_suspended_salons,
+      'total_barbers', v_total_barbers,
+      'total_appointments', v_total_appointments,
+      'today_appointments', v_today_appointments
+    ),
+    'salons', COALESCE(v_salons, '[]'::jsonb)
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.super_admin_toggle_salon(
+  p_master_key TEXT,
+  p_salon_id UUID,
+  p_suspend BOOLEAN,
+  p_reason TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+BEGIN
+  IF p_master_key != 'maqass-owner-2026' THEN
+    RAISE EXCEPTION 'Unauthorized: Invalid master admin credentials';
+  END IF;
+
+  UPDATE salons
+  SET is_suspended = p_suspend,
+      suspended_reason = CASE WHEN p_suspend THEN p_reason ELSE NULL END,
+      updated_at = now()
+  WHERE id = p_salon_id;
+
+  RETURN jsonb_build_object('success', true, 'salon_id', p_salon_id, 'is_suspended', p_suspend);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.super_admin_get_overview(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(TEXT, UUID, BOOLEAN, TEXT) TO anon, authenticated;
+
