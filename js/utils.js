@@ -6,6 +6,22 @@
 import { CONFIG, supabase } from './config.js';
 
 /**
+ * Ultra-fast HTML sanitizer to prevent Cross-Site Scripting (XSS)
+ * @param {string} str - Raw untrusted string
+ * @returns {string} Sanitized HTML-safe string
+ */
+export function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  const s = String(str);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
  * Returns the current date in Egypt local time ("YYYY-MM-DD")
  * Avoids naive `toISOString().split('T')[0]` which shifts date backwards past 10 PM.
  * @param {Date} [date] - Base date object (defaults to now)
@@ -168,7 +184,12 @@ export function calculateAvailableSlots(
   }
 
   const openMinutes = timeToMinutes(workingDaySchedule.open);
-  const closeMinutes = timeToMinutes(workingDaySchedule.close);
+  let closeMinutes = timeToMinutes(workingDaySchedule.close);
+
+  // Handle midnight crossing (e.g. opens 11:00 AM / 660 mins, closes 01:00 AM / 60 + 1440 = 1500 mins)
+  if (closeMinutes <= openMinutes) {
+    closeMinutes += 1440;
+  }
 
   if (closeMinutes <= openMinutes) {
     return [];
@@ -195,7 +216,11 @@ export function calculateAvailableSlots(
   const step = CONFIG.DEFAULT_SLOT_INTERVAL_MINUTES || 15;
   const barbersList = (activeBarbers && activeBarbers.length > 0) 
     ? activeBarbers 
-    : [{ id: 'default', name: 'الحلاق' }];
+    : [];
+
+  if (barbersList.length === 0) {
+    return [];
+  }
 
   for (let slotStart = openMinutes; slotStart + serviceDurationMinutes <= closeMinutes; slotStart += step) {
     const slotEnd = slotStart + serviceDurationMinutes;
@@ -205,13 +230,24 @@ export function calculateAvailableSlots(
       continue;
     }
 
+    const normStart = slotStart >= 1440 ? slotStart - 1440 : slotStart;
+    const normEnd = slotEnd >= 1440 ? slotEnd - 1440 : slotEnd;
+
+    // Collision checker with normalized active bookings
+    const collidesWith = (b) => {
+      if (slotStart < 1440 && slotEnd <= 1440) {
+        return (slotStart < b.end && slotEnd > b.start);
+      }
+      return (normStart < b.end && normEnd > b.start);
+    };
+
     // Determine available barbers for this slot
     let availableBarber = null;
 
     if (selectedBarberId && selectedBarberId !== 'any') {
       // Specific barber chosen
       const isOccupied = activeBookings.some(b => 
-        b.barber_id === selectedBarberId && slotStart < b.end && slotEnd > b.start
+        b.barber_id === selectedBarberId && collidesWith(b)
       );
       if (!isOccupied) {
         availableBarber = barbersList.find(b => b.id === selectedBarberId) || { id: selectedBarberId, name: 'الحلاق المختار' };
@@ -220,14 +256,14 @@ export function calculateAvailableSlots(
       // Any barber: Find first available barber for this slot
       availableBarber = barbersList.find(b => {
         return !activeBookings.some(app => 
-          app.barber_id === b.id && slotStart < app.end && slotEnd > app.start
+          app.barber_id === b.id && collidesWith(app)
         );
       });
     }
 
     if (availableBarber) {
-      const time24 = minutesToTime(slotStart);
-      const endTime24 = minutesToTime(slotEnd);
+      const time24 = minutesToTime(normStart);
+      const endTime24 = minutesToTime(normEnd);
       availableSlots.push({
         time: time24,
         endTime: endTime24,

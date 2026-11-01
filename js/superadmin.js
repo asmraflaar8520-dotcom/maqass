@@ -14,7 +14,8 @@ import {
 import {
   showToast,
   formatTime12H,
-  formatDateArabic
+  formatDateArabic,
+  escapeHtml
 } from './utils.js';
 
 // Super Admin State
@@ -261,13 +262,13 @@ function renderSalonsTable() {
     tr.innerHTML = `
       <td>
         <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 2px;">
-          ${salon.salon_name}
+          ${escapeHtml(salon.salon_name)}
         </div>
         <div style="display: flex; align-items: center; gap: 6px;">
           <code style="font-size: 0.75rem; color: var(--admin-accent); background: rgba(6,182,212,0.1); padding: 2px 6px; border-radius: 4px;">
-            ${salon.slug}
+            ${escapeHtml(salon.slug)}
           </code>
-          <a href="index.html?s=${salon.slug}" target="_blank" style="color: var(--text-muted); font-size: 0.75rem; text-decoration: underline;" title="فتح صفحة الحجز المباشرة للزبائن">
+          <a href="index.html?s=${encodeURIComponent(salon.slug)}" target="_blank" style="color: var(--text-muted); font-size: 0.75rem; text-decoration: underline;" title="فتح صفحة الحجز المباشرة للزبائن">
             رابط الحجز ↗
           </a>
         </div>
@@ -275,7 +276,7 @@ function renderSalonsTable() {
 
       <td>
         <div style="font-family: monospace; font-weight: 600; font-size: 0.88rem; direction: ltr; text-align: right;">
-          ${salon.phone}
+          ${escapeHtml(salon.phone)}
         </div>
         <a href="${waLink}" target="_blank" style="font-size: 0.75rem; color: #34d399; text-decoration: none; display: inline-flex; align-items: center; gap: 3px; margin-top: 2px;">
           💬 محادثة واتساب
@@ -286,8 +287,8 @@ function renderSalonsTable() {
         <span class="badge" style="background: rgba(212, 175, 55, 0.15); color: var(--gold-primary); font-size: 0.8rem;">
           ✂️ ${salon.barbers_count || 1} كراسي
         </span>
-        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 3px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${salon.barber_names}">
-          ${salon.barber_names || 'الحلاق الرئيسي'}
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 3px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(salon.barber_names || '')}">
+          ${escapeHtml(salon.barber_names || 'الحلاق الرئيسي')}
         </div>
       </td>
 
@@ -300,10 +301,10 @@ function renderSalonsTable() {
 
       <td>
         ${isSuspended ? `
-          <span class="badge badge-suspended" title="${salon.suspended_reason || 'مجمد بأمر الإدارة'}">
+          <span class="badge badge-suspended" title="${escapeHtml(salon.suspended_reason || 'مجمد بأمر الإدارة')}">
             🔒 مجمد / مقفول
           </span>
-          ${salon.suspended_reason ? `<div style="font-size: 0.72rem; color: #f87171; margin-top: 3px;">${salon.suspended_reason}</div>` : ''}
+          ${salon.suspended_reason ? `<div style="font-size: 0.72rem; color: #f87171; margin-top: 3px;">${escapeHtml(salon.suspended_reason)}</div>` : ''}
         ` : `
           <span class="badge badge-live">
             🟢 نشط ومتاح
@@ -429,18 +430,18 @@ async function handleInspectSalon(salonId, salonName, salonSlug) {
 
       row.innerHTML = `
         <td>
-          <div style="font-weight: 700;">${app.client_name}</div>
-          <div style="font-family: monospace; font-size: 0.78rem; color: var(--text-muted);">${app.client_phone}</div>
+          <div style="font-weight: 700;">${escapeHtml(app.client_name)}</div>
+          <div style="font-family: monospace; font-size: 0.78rem; color: var(--text-muted);">${escapeHtml(app.client_phone)}</div>
         </td>
         <td>
-          <span style="font-size: 0.85rem;">${serviceName}</span>
+          <span style="font-size: 0.85rem;">${escapeHtml(serviceName)}</span>
         </td>
         <td>
-          <span style="font-size: 0.85rem; color: var(--gold-light);">💈 ${barberName}</span>
+          <span style="font-size: 0.85rem; color: var(--gold-light);">💈 ${escapeHtml(barberName)}</span>
         </td>
         <td>
           <div style="font-size: 0.82rem;">${formatDateArabic(app.appointment_date)}</div>
-          <div style="font-size: 0.78rem; color: var(--text-muted); direction: ltr; text-align: right;">${formatTime12H(app.appointment_time)}</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); direction: ltr; text-align: right;">${formatTime12H(app.appointment_time || app.start_time)}</div>
         </td>
         <td>
           ${statusMap[app.status] || app.status}

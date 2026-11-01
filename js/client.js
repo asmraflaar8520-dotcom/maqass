@@ -21,7 +21,8 @@ import {
   formatTime12H,
   getEgyptLocalDate,
   isValidEgyptianPhone, 
-  showToast 
+  showToast,
+  escapeHtml 
 } from './utils.js';
 
 // Read URL parameter for salon slug (?s=SLUG or ?salon=SLUG)
@@ -450,7 +451,7 @@ function renderServicesDOM(services) {
     }
 
     card.innerHTML = `
-      <div class="service-name">${service.name}</div>
+      <div class="service-name">${escapeHtml(service.name)}</div>
       <div class="service-meta">
         <span>⏱️ ${service.duration_minutes} دقيقة</span>
         <span class="service-price">${Number(service.price).toFixed(0)} ج.م</span>

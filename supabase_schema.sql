@@ -276,11 +276,17 @@ CREATE POLICY "Owner can manage services"
     salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
   );
 
--- ---- APPOINTMENTS POLICIES ----
+-- ---- APPOINTMENTS POLICIES (Privacy Hardened — Zero PII Leakage) ----
 DROP POLICY IF EXISTS "Public can view appointments for slot calculation" ON appointments;
-CREATE POLICY "Public can view appointments for slot calculation" 
+DROP POLICY IF EXISTS "Owner can view appointments" ON appointments;
+
+-- Only authenticated salon owners can view their own salon's appointments with client details
+CREATE POLICY "Owner can view appointments" 
   ON appointments FOR SELECT 
-  USING (TRUE);
+  TO authenticated 
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+  );
 
 DROP POLICY IF EXISTS "Public can book pending appointments" ON appointments;
 CREATE POLICY "Public can book pending appointments" 
@@ -309,22 +315,71 @@ CREATE POLICY "Owner can delete appointments"
     salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
   );
 
--- ---- BLACKLIST POLICIES ----
+-- Secure privacy-preserving RPC: Public can calculate occupied slots WITHOUT ever reading client names or phones
+CREATE OR REPLACE FUNCTION public.get_booked_slots(p_salon_id UUID, p_date DATE)
+RETURNS TABLE (start_time TIME, end_time TIME, barber_id UUID, status TEXT)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT start_time, end_time, barber_id, status
+  FROM appointments
+  WHERE (p_salon_id IS NULL OR salon_id = p_salon_id)
+    AND appointment_date = p_date
+    AND status NOT IN ('cancelled', 'no_show');
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_booked_slots(UUID, DATE) TO anon, authenticated;
+
+-- ---- BLACKLIST POLICIES (Privacy & Multi-Tenant Hardened) ----
 DROP POLICY IF EXISTS "Public can check blacklist status" ON blacklist;
-CREATE POLICY "Public can check blacklist status" 
+DROP POLICY IF EXISTS "Owner can view blacklist" ON blacklist;
+
+CREATE POLICY "Owner can view blacklist" 
   ON blacklist FOR SELECT 
-  USING (TRUE);
+  TO authenticated 
+  USING (
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+  );
 
 DROP POLICY IF EXISTS "Owner can manage blacklist" ON blacklist;
 CREATE POLICY "Owner can manage blacklist" 
   ON blacklist FOR ALL 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
   ) 
   WITH CHECK (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
   );
+
+-- Enforce unique phone per salon
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blacklist_unique_salon_phone ON blacklist(salon_id, client_phone);
+
+-- Secure verification RPC: Check if client is blocked WITHOUT exposing the full blacklist table
+CREATE OR REPLACE FUNCTION public.is_client_blocked(p_salon_id UUID, p_phone TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_sanitized TEXT := regexp_replace(regexp_replace(p_phone, '\s+', '', 'g'), '^(\+20|0020)', '0');
+  v_blocked BOOLEAN := FALSE;
+BEGIN
+  SELECT is_blocked INTO v_blocked
+  FROM blacklist
+  WHERE (p_salon_id IS NULL OR salon_id = p_salon_id)
+    AND client_phone = v_sanitized
+  LIMIT 1;
+
+  RETURN COALESCE(v_blocked, FALSE);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_client_blocked(UUID, TEXT) TO anon, authenticated;
 
 -- =============================================================================
 -- 9. ATOMIC RPC FUNCTIONS: increment_salon_views
@@ -399,41 +454,66 @@ SET email_confirmed_at = now()
 WHERE email_confirmed_at IS NULL;
 
 -- =============================================================================
--- 11. ZERO-FRICTION BARBER AUTHENTICATION RPC (Auto-Confirm & Password Sync)
--- Ensures seamless login & signup so barbers in Egypt never get blocked by
--- email confirmations or credential mismatches.
+-- 11. SECURITY HARDENING: REMOVE INSECURE RPC & ADD DEFENSE TRIGGERS
 -- =============================================================================
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- Drops legacy insecure function to completely eliminate account takeover vulnerability
+DROP FUNCTION IF EXISTS public.secure_barber_auth(TEXT, TEXT);
 
-CREATE OR REPLACE FUNCTION public.secure_barber_auth(p_email TEXT, p_password TEXT)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, auth, extensions
-AS $$
-DECLARE
-  v_user_id UUID;
+-- 11.1 PREVENT SUSPENSION TAMPERING BY SALON OWNERS (Vulnerability 1.5)
+CREATE OR REPLACE FUNCTION public.check_salon_suspension_tamper()
+RETURNS TRIGGER AS $$
 BEGIN
-  SELECT id INTO v_user_id 
-  FROM auth.users 
-  WHERE lower(email) = lower(trim(p_email));
-  
-  IF v_user_id IS NOT NULL THEN
-    UPDATE auth.users
-    SET encrypted_password = crypt(p_password, gen_salt('bf')),
-        email_confirmed_at = COALESCE(email_confirmed_at, now()),
-        updated_at = now()
-    WHERE id = v_user_id;
-
-    RETURN jsonb_build_object('success', true, 'action', 'updated', 'user_id', v_user_id);
+  IF (OLD.is_suspended IS DISTINCT FROM NEW.is_suspended) OR 
+     (OLD.suspended_reason IS DISTINCT FROM NEW.suspended_reason) THEN
+    -- If request originates from authenticated client that is NOT verified platform admin
+    IF current_setting('request.jwt.claim.role', true) = 'authenticated' AND 
+       NOT EXISTS (SELECT 1 FROM platform_admins WHERE email = current_setting('request.jwt.claim.email', true)) THEN
+      RAISE EXCEPTION 'غير مصرح بتعديل حالة قفل الصالون إلا من خلال مالك المنصة الرئيسي' USING ERRCODE = '42501';
+    END IF;
   END IF;
-
-  RETURN jsonb_build_object('success', true, 'action', 'none');
+  RETURN NEW;
 END;
-$$;
+$$ LANGUAGE plpgsql;
 
-GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO anon;
-GRANT EXECUTE ON FUNCTION public.secure_barber_auth(TEXT, TEXT) TO authenticated;
+DROP TRIGGER IF EXISTS trg_prevent_suspension_tamper ON salons;
+CREATE TRIGGER trg_prevent_suspension_tamper
+BEFORE UPDATE ON salons
+FOR EACH ROW
+EXECUTE FUNCTION public.check_salon_suspension_tamper();
+
+-- 11.2 PREVENT PAST BOOKINGS (Smell 3.3)
+CREATE OR REPLACE FUNCTION public.check_appointment_date_valid()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.appointment_date < CURRENT_DATE THEN
+    RAISE EXCEPTION 'لا يمكن حجز موعد في تاريخ ماضٍ' USING ERRCODE = 'P0002';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_check_appointment_date ON appointments;
+CREATE TRIGGER trg_check_appointment_date
+BEFORE INSERT OR UPDATE ON appointments
+FOR EACH ROW
+EXECUTE FUNCTION public.check_appointment_date_valid();
+
+-- 11.3 AUTO-PROVISION PRIMARY BARBER ON NEW SALON (Bug 2.1 & 2.3)
+CREATE OR REPLACE FUNCTION public.auto_provision_primary_barber()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO barbers (id, salon_id, name, is_active)
+  VALUES (gen_random_uuid(), NEW.id, 'الكرسي الرئيسي', TRUE)
+  ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_auto_provision_primary_barber ON salons;
+CREATE TRIGGER trg_auto_provision_primary_barber
+AFTER INSERT ON salons
+FOR EACH ROW
+EXECUTE FUNCTION public.auto_provision_primary_barber();
 
 -- =============================================================================
 -- 12. SUPER ADMIN OWNER OVERVIEW & CONTROL (Lock & Oversee Salons)

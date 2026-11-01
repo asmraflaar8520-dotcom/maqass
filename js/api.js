@@ -25,6 +25,63 @@ export class BookingError extends Error {
 }
 
 /**
+ * Translates PostgreSQL/Supabase errors into reassuring, polite Arabic messages
+ * Never bubbles raw error codes (e.g., 23P01, check_violation, 42501) to users.
+ * @param {Error|Object|string} err
+ * @returns {string}
+ */
+export function translateDatabaseError(err) {
+  if (!err) return 'حدث خطأ غير متوقع، يرجى المحاولة مرة أخرى.';
+  const message = typeof err === 'string' ? err : (err.message || err.details || err.hint || '');
+  const code = (err.code || '').toString();
+
+  // Exclusion constraint / overlapping booking (23P01)
+  if (code === '23P01' || message.includes('no_overlapping_appointments') || message.includes('conflicting key value') || message.includes('exclusion')) {
+    return 'عذراً، هذا الموعد تم حجزه للتو مع الحلاق المختار! يرجى اختيار موعد آخر.';
+  }
+
+  // Check constraint violations (23514)
+  if (code === '23514' || message.includes('check_appointment_date_valid') || message.includes('appointment_date >= CURRENT_DATE')) {
+    return 'لا يمكن حجز موعد في تاريخ ماضٍ. يرجى اختيار تاريخ اليوم أو يوم قادم.';
+  }
+
+  // Blacklist / unique constraint (23505)
+  if (code === '23505' || message.includes('idx_blacklist_unique_salon_phone') || message.includes('unique constraint')) {
+    return 'هذا العميل مسجل بالفعل في قائمة الحظر الخاصة بالصالون.';
+  }
+
+  // Row Level Security (RLS) violation (42501)
+  if (code === '42501' || message.includes('row-level security') || message.includes('permission denied')) {
+    return 'ليس لديك الصلاحية لتنفيذ هذا الإجراء.';
+  }
+
+  // Foreign key violation
+  if (code === '23503') {
+    return 'البيانات المرتبطة غير متوفرة أو تم تعديلها.';
+  }
+
+  // Suspension trigger & message
+  if (message.includes('لا يمكن تعديل حالة تعليق الصالون')) {
+    return 'لا يمكن تعديل حالة تعليق الصالون إلا من خلال الإدارة العليا.';
+  }
+  if (message.includes('متوقف') || message.includes('إدارة المنصة')) {
+    return 'عذراً، هذا الصالون متوقف ومغلق حالياً بقرار من إدارة المنصة 🔒';
+  }
+
+  // Network / Connection
+  if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('networkerror')) {
+    return 'تعذر الاتصال بالخادم، يرجى التحقق من اتصالك بالإنترنت.';
+  }
+
+  // If already clean Arabic without database jargon, preserve it
+  if (/[\u0600-\u06FF]/.test(message) && !message.includes('PostgrestError') && !message.includes('column') && !message.includes('relation') && !message.includes('table')) {
+    return message;
+  }
+
+  return 'حدث خطأ أثناء معالجة الطلب، يرجى المحاولة مرة أخرى لاحقاً.';
+}
+
+/**
  * Determines if application should run in Demo Mode (when Supabase is not configured yet)
  */
 export function isDemoMode() {
@@ -257,6 +314,12 @@ export async function getActiveServices(salonId = null) {
  * @param {string} date - "YYYY-MM-DD"
  * @param {string} [salonId]
  * @param {string} [barberId]
+/**
+ * Fetches only occupied time intervals for the booking wizard via privacy-preserving RPC
+ * Client names and phone numbers are NEVER retrieved by public visitors
+ * @param {string} date - "YYYY-MM-DD"
+ * @param {string} [salonId] - Salon UUID
+ * @param {string} [barberId] - Specific barber UUID
  * @returns {Promise<Array<Object>>}
  */
 export async function getBookedSlots(date, salonId = null, barberId = null) {
@@ -276,23 +339,22 @@ export async function getBookedSlots(date, salonId = null, barberId = null) {
   }
 
   try {
-    let q = supabase
-      .from('appointments')
-      .select('id, salon_id, barber_id, start_time, end_time, status')
-      .eq('appointment_date', date)
-      .not('status', 'in', '("cancelled","no_show")');
-
-    if (salonId) q = q.eq('salon_id', salonId);
-    if (barberId && barberId !== 'any') q = q.eq('barber_id', barberId);
-
-    const { data, error } = await q;
+    const { data, error } = await supabase.rpc('get_booked_slots', {
+      p_salon_id: salonId || null,
+      p_date: date
+    });
 
     if (error) {
-      console.error('Error fetching booked slots:', error);
+      console.error('Error fetching booked slots via RPC:', error);
       throw new BookingError('فشل في جلب المواعيد المحجوزة لهذا اليوم.', error.code);
     }
 
-    return data || [];
+    let slots = data || [];
+    if (barberId && barberId !== 'any') {
+      slots = slots.filter(s => s.barber_id === barberId);
+    }
+
+    return slots;
   } catch (err) {
     if (err instanceof BookingError) throw err;
     const store = getDemoStore();
@@ -303,7 +365,8 @@ export async function getBookedSlots(date, salonId = null, barberId = null) {
 }
 
 /**
- * Checks if a phone number is blocked on the blacklist
+ * Checks if a phone number is blocked via privacy-preserving RPC
+ * The full blacklist table is NEVER exposed to public visitors
  * @param {string} rawPhone
  * @param {string} [salonId]
  * @returns {Promise<{ isBlocked: boolean, client: Object|null }>}
@@ -320,21 +383,17 @@ export async function checkBlacklist(rawPhone, salonId = null) {
   }
 
   try {
-    let q = supabase
-      .from('blacklist')
-      .select('id, salon_id, client_phone, no_show_count, is_blocked')
-      .eq('client_phone', sanitized);
-
-    if (salonId) q = q.eq('salon_id', salonId);
-
-    const { data, error } = await q.maybeSingle();
+    const { data, error } = await supabase.rpc('is_client_blocked', {
+      p_salon_id: salonId || null,
+      p_phone: sanitized
+    });
 
     if (error) {
       console.warn('Blacklist check warning:', error.message);
       return { isBlocked: false, client: null };
     }
 
-    return { isBlocked: !!(data && data.is_blocked), client: data };
+    return { isBlocked: !!data, client: null };
   } catch (err) {
     console.error('Error in checkBlacklist:', err);
     return { isBlocked: false, client: null };
@@ -483,13 +542,13 @@ export async function createAppointment(payload) {
       }
 
       console.error('Database error creating appointment:', error);
-      throw new BookingError(`حدث خطأ أثناء حفظ الحجز: ${error.message}`, error.code);
+      throw new BookingError(translateDatabaseError(error), error.code);
     }
 
     return data;
   } catch (err) {
     if (err instanceof BookingError) throw err;
-    throw new BookingError('حدث خطأ غير متوقع أثناء تسجيل الحجز. يرجى إعادة المحاولة.');
+    throw new BookingError(translateDatabaseError(err));
   }
 }
 
@@ -520,12 +579,6 @@ export async function signInBarber(email, password = '') {
   }
 
   // 1. Proactively try secure_barber_auth if RPC is available (auto-confirms & syncs)
-  try {
-    await supabase.rpc('secure_barber_auth', { p_email: cleanEmail, p_password: cleanPassword });
-  } catch (_) {
-    // Ignore if RPC not installed
-  }
-
   try {
     const { data, error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
@@ -696,14 +749,7 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     throw new BookingError('يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل.');
   }
 
-  // 1. Proactively try secure_barber_auth if RPC is available (auto-confirms & syncs password)
-  try {
-    await supabase.rpc('secure_barber_auth', { p_email: cleanEmail, p_password: cleanPassword });
-  } catch (_) {
-    // Ignore if RPC not installed
-  }
-
-  // 2. Attempt signUp in Supabase Auth
+  // 1. Attempt standard signUp in Supabase Auth
   let activeUser = null;
   let isExistingUser = false;
 
@@ -1101,7 +1147,7 @@ export async function getTodayAppointments(date, salonId = null, barberId = null
  * @param {string} clientPhone
  * @returns {Promise<Object>}
  */
-export async function updateAppointmentStatus(id, status, clientPhone = '') {
+export async function updateAppointmentStatus(id, status, clientPhone = '', salonId = null) {
   if (isDemoMode()) {
     const store = getDemoStore();
     const app = store.appointments.find(a => a.id === id);
@@ -1116,6 +1162,7 @@ export async function updateAppointmentStatus(id, status, clientPhone = '') {
         } else {
           store.blacklist.push({
             id: 'bl-' + Date.now(),
+            salon_id: salonId || 'demo-salon',
             client_phone: sanitized,
             no_show_count: 1,
             is_blocked: false
@@ -1138,8 +1185,9 @@ export async function updateAppointmentStatus(id, status, clientPhone = '') {
 
     if (error) throw error;
 
-    if (status === 'no_show' && clientPhone && clientPhone !== '01000000000') {
-      await handleNoShowBlacklist(clientPhone);
+    const targetSalonId = salonId || data?.salon_id;
+    if (status === 'no_show' && clientPhone && clientPhone !== '01000000000' && targetSalonId) {
+      await handleNoShowBlacklist(clientPhone, targetSalonId);
     }
 
     return data;
@@ -1150,15 +1198,19 @@ export async function updateAppointmentStatus(id, status, clientPhone = '') {
 }
 
 /**
- * Auto-blacklisting handler
+ * Auto-blacklisting handler (Strict Multi-Tenant Isolation)
+ * @param {string} rawPhone
+ * @param {string} salonId
  */
-async function handleNoShowBlacklist(rawPhone) {
+async function handleNoShowBlacklist(rawPhone, salonId) {
+  if (!rawPhone || !salonId) return;
   const sanitized = rawPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
 
   try {
     const { data: existing } = await supabase
       .from('blacklist')
       .select('id, no_show_count, is_blocked')
+      .eq('salon_id', salonId)
       .eq('client_phone', sanitized)
       .maybeSingle();
 
@@ -1178,6 +1230,7 @@ async function handleNoShowBlacklist(rawPhone) {
       await supabase
         .from('blacklist')
         .insert({
+          salon_id: salonId,
           client_phone: sanitized,
           no_show_count: 1,
           is_blocked: false
@@ -1558,19 +1611,22 @@ export async function toggleServiceStatus(id, isActive) {
 }
 
 /**
- * Fetches all records from blacklist table
+ * Fetches all records from blacklist table for current salon
+ * @param {string} [salonId]
  * @returns {Promise<Array<Object>>}
  */
-export async function getBlacklist() {
+export async function getBlacklist(salonId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
   if (isDemoMode()) {
     return getDemoStore().blacklist;
   }
 
   try {
-    const { data, error } = await supabase
-      .from('blacklist')
-      .select('*')
-      .order('updated_at', { ascending: false });
+    let q = supabase.from('blacklist').select('*');
+    if (targetSalonId) {
+      q = q.eq('salon_id', targetSalonId);
+    }
+    const { data, error } = await q.order('updated_at', { ascending: false });
 
     if (error) throw error;
     return data || [];
@@ -1582,10 +1638,12 @@ export async function getBlacklist() {
 /**
  * Unblocks a client and resets no-show count to 0
  * @param {string} clientPhone
+ * @param {string} [salonId]
  * @returns {Promise<boolean>}
  */
-export async function unblockClient(clientPhone) {
+export async function unblockClient(clientPhone, salonId = null) {
   const sanitized = clientPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
 
   if (isDemoMode()) {
     const store = getDemoStore();
@@ -1599,7 +1657,7 @@ export async function unblockClient(clientPhone) {
   }
 
   try {
-    const { error } = await supabase
+    let q = supabase
       .from('blacklist')
       .update({
         is_blocked: false,
@@ -1607,6 +1665,12 @@ export async function unblockClient(clientPhone) {
         updated_at: new Date().toISOString()
       })
       .eq('client_phone', sanitized);
+
+    if (targetSalonId) {
+      q = q.eq('salon_id', targetSalonId);
+    }
+
+    const { error } = await q;
 
     if (error) throw error;
     return true;
@@ -1634,7 +1698,11 @@ export async function loginSuperAdmin({ email, password }) {
   }
 
   if (isDemoMode()) {
-    const demoSession = { token: '00000000-0000-0000-0000-000000000000', email: cleanEmail };
+    const demoSession = { 
+      token: '00000000-0000-0000-0000-000000000000', 
+      email: cleanEmail,
+      timestamp: Date.now()
+    };
     sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, JSON.stringify(demoSession));
     return demoSession;
   }
@@ -1656,7 +1724,8 @@ export async function loginSuperAdmin({ email, password }) {
     const sessionData = {
       token: data.token,
       email: data.email,
-      message: data.message
+      message: data.message,
+      timestamp: Date.now()
     };
 
     sessionStorage.setItem(SUPER_ADMIN_STORAGE_KEY, JSON.stringify(sessionData));
@@ -1668,7 +1737,7 @@ export async function loginSuperAdmin({ email, password }) {
 }
 
 /**
- * Checks if the platform super admin has an active valid session
+ * Checks if the platform super admin has an active valid session (strictly <= 24 hours old)
  * @returns {Promise<boolean>}
  */
 export async function getSuperAdminSession() {
@@ -1677,14 +1746,24 @@ export async function getSuperAdminSession() {
 
   try {
     const session = JSON.parse(sessionRaw);
-    return !!(session && session.token);
+    if (!session || !session.token) return false;
+
+    // Smell 3.2: Enforce 24-hour session expiration
+    const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+    if (session.timestamp && (Date.now() - session.timestamp > MAX_SESSION_AGE_MS)) {
+      sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
+      return false;
+    }
+
+    return true;
   } catch {
+    sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
     return false;
   }
 }
 
 /**
- * Helper to get the active session token
+ * Helper to get the active session token (validates expiration)
  * @returns {string|null}
  */
 export function getSuperAdminToken() {
@@ -1692,8 +1771,14 @@ export function getSuperAdminToken() {
   if (!sessionRaw) return null;
   try {
     const session = JSON.parse(sessionRaw);
+    const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+    if (session?.timestamp && (Date.now() - session.timestamp > MAX_SESSION_AGE_MS)) {
+      sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
+      return null;
+    }
     return session?.token || null;
   } catch {
+    sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
     return null;
   }
 }

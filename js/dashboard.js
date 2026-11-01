@@ -32,7 +32,8 @@ import {
   formatDateArabic,
   getEgyptLocalDate,
   generateWhatsAppLink,
-  showToast
+  showToast,
+  escapeHtml
 } from './utils.js';
 
 // Application State
@@ -696,7 +697,7 @@ async function loadBarbersList() {
             <div style="display: flex; align-items: center; gap: 10px;">
               <span style="font-size: 1.2rem;">💈</span>
               <div>
-                <div style="font-weight: 700; font-size: 0.95rem;">${barber.name}</div>
+                <div style="font-weight: 700; font-size: 0.95rem;">${escapeHtml(barber.name)}</div>
                 <div style="font-size: 0.78rem; color: ${barber.is_active ? 'var(--status-completed)' : 'var(--status-cancelled)'};">
                   ${barber.is_active ? '● متاح للحجز' : '● متوقف مؤقتاً'}
                 </div>
@@ -794,7 +795,7 @@ async function loadBarbersList() {
         DOM.walkinBarberGroup.style.display = 'block';
         DOM.walkinBarberSelect.innerHTML = barbers
           .filter(b => b.is_active)
-          .map(b => `<option value="${b.id}">${b.name}</option>`)
+          .map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`)
           .join('');
       } else {
         DOM.walkinBarberGroup.style.display = 'none';
@@ -927,14 +928,14 @@ function renderQueueCards(appointments) {
     card.innerHTML = `
       <div class="queue-header">
         <div class="queue-client-name">
-          <span>${app.client_name}</span>
+          <span>${escapeHtml(app.client_name)}</span>
           ${isWalkIn ? '<span class="badge" style="background: rgba(16,185,129,0.15); color: #34d399;">مباشر ⚡</span>' : '<span class="badge" style="background: rgba(59,130,246,0.15); color: #60a5fa;">أونلاين 🌐</span>'}
         </div>
         <div class="queue-time">${timeFormatted}</div>
       </div>
 
       <div class="queue-meta">
-        <span>💈 ${serviceName} (${duration} دقيقة)</span>
+        <span>💈 ${escapeHtml(serviceName)} (${duration} دقيقة)</span>
         <span>💵 ${Number(price).toFixed(0)} ج.م (للعرض)</span>
         ${!isWalkIn ? `<a href="${whatsappUrl}" target="_blank" rel="noopener" class="badge" style="background: #25d366; color: #fff; text-decoration: none; padding: 3px 8px;" title="إرسال تذكير واتساب">💬 واتساب</a>` : ''}
         ${statusBadge}
@@ -942,17 +943,17 @@ function renderQueueCards(appointments) {
 
       <!-- Giant 1-Tap Status Actions -->
       <div class="queue-actions">
-        <button class="btn-action btn-action-start" data-id="${app.id}" data-phone="${app.client_phone}" ${app.status === 'in_progress' ? 'disabled style="opacity: 0.4;"' : ''}>
+        <button class="btn-action btn-action-start" data-id="${app.id}" data-phone="${escapeHtml(app.client_phone)}" ${app.status === 'in_progress' ? 'disabled style="opacity: 0.4;"' : ''}>
           <span>✂️</span>
           <span>بدأ الحلاقة</span>
         </button>
 
-        <button class="btn-action btn-action-done" data-id="${app.id}" data-phone="${app.client_phone}" ${app.status === 'completed' ? 'disabled style="opacity: 0.4;"' : ''}>
+        <button class="btn-action btn-action-done" data-id="${app.id}" data-phone="${escapeHtml(app.client_phone)}" ${app.status === 'completed' ? 'disabled style="opacity: 0.4;"' : ''}>
           <span>✓</span>
           <span>تم الانتهاء</span>
         </button>
 
-        <button class="btn-action btn-action-noshow" data-id="${app.id}" data-phone="${app.client_phone}" ${app.status === 'no_show' ? 'disabled style="opacity: 0.4;"' : ''}>
+        <button class="btn-action btn-action-noshow" data-id="${app.id}" data-phone="${escapeHtml(app.client_phone)}" ${app.status === 'no_show' ? 'disabled style="opacity: 0.4;"' : ''}>
           <span>✕</span>
           <span>لم يحضر</span>
         </button>
@@ -976,7 +977,7 @@ function renderQueueCards(appointments) {
  */
 async function handleStatusChange(appointmentId, newStatus, clientPhone) {
   try {
-    await updateAppointmentStatus(appointmentId, newStatus, clientPhone);
+    await updateAppointmentStatus(appointmentId, newStatus, clientPhone, state.salonSettings?.id);
     
     const statusLabels = {
       in_progress: 'على الكرسي الآن',
@@ -1035,7 +1036,7 @@ function updateOperationalMetrics(appointments) {
     item.style.borderRadius = 'var(--radius-sm)';
 
     item.innerHTML = `
-      <span style="font-weight: 600; font-size: 0.9rem;">${name}</span>
+      <span style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(name)}</span>
       <span class="badge" style="background: rgba(212,175,55,0.15); color: var(--gold-primary); font-size: 0.85rem;">${count} رؤوس ✂️</span>
     `;
     DOM.servicesBreakdownList.appendChild(item);
@@ -1057,7 +1058,7 @@ async function loadServicesCatalog() {
 
       row.innerHTML = `
         <div>
-          <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary);">${s.name}</div>
+          <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary);">${escapeHtml(s.name)}</div>
           <div style="font-size: 0.8rem; color: var(--text-muted);">
             ⏱️ ${s.duration_minutes} دقيقة • 💵 ${Number(s.price).toFixed(0)} ج.م (للعرض)
           </div>
@@ -1105,7 +1106,7 @@ function renderWalkInModalServices(activeServices) {
     const btn = document.createElement('div');
     btn.className = 'service-card';
     btn.innerHTML = `
-      <div class="service-name">${s.name}</div>
+      <div class="service-name">${escapeHtml(s.name)}</div>
       <div class="service-meta">
         <span>⏱️ ${s.duration_minutes} دقيقة</span>
         <span class="service-price">${Number(s.price).toFixed(0)} ج.م</span>
@@ -1150,7 +1151,7 @@ function renderWalkInModalServices(activeServices) {
 async function loadBlacklistData() {
   if (!DOM.blacklistTableBody) return;
   try {
-    const blacklist = await getBlacklist();
+    const blacklist = await getBlacklist(state.salonSettings?.id);
     state.blacklist = blacklist;
 
     DOM.blacklistTableBody.innerHTML = '';
@@ -1171,7 +1172,7 @@ async function loadBlacklistData() {
       const isBlocked = b.is_blocked;
 
       tr.innerHTML = `
-        <td style="font-family: monospace; font-weight: 700;">${b.client_phone}</td>
+        <td style="font-family: monospace; font-weight: 700;">${escapeHtml(b.client_phone)}</td>
         <td><span class="badge badge-no-show">${b.no_show_count} مرات غياب</span></td>
         <td>
           ${isBlocked 
@@ -1179,7 +1180,7 @@ async function loadBlacklistData() {
             : '<span class="badge badge-pending">تحذير (متبقي فرصة) ⚠️</span>'}
         </td>
         <td>
-          <button class="btn btn-secondary btn-unblock" data-phone="${b.client_phone}" style="width: auto; padding: 4px 10px; font-size: 0.78rem;">
+          <button class="btn btn-secondary btn-unblock" data-phone="${escapeHtml(b.client_phone)}" style="width: auto; padding: 4px 10px; font-size: 0.78rem;">
             فك الحظر ✓
           </button>
         </td>
@@ -1188,7 +1189,7 @@ async function loadBlacklistData() {
       tr.querySelector('.btn-unblock').addEventListener('click', async () => {
         if (confirm(`فك حظر الرقم (${b.client_phone}) وإعادته للقائمة البيضاء؟`)) {
           try {
-            await unblockClient(b.client_phone);
+            await unblockClient(b.client_phone, state.salonSettings?.id);
             showToast(`تم فك الحظر عن الرقم ${b.client_phone}`, 'success');
             await loadBlacklistData();
           } catch (err) {
