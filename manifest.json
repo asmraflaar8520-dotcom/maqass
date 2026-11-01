@@ -1,0 +1,20 @@
+{
+  "name": "مِقَصْ — إدارة صالونات الحلاقة",
+  "short_name": "مِقَصْ",
+  "description": "نظام حجز مواعيد الحلاقة وقائمة الانتظار السحابي في مصر",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

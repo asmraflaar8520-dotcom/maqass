@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="description" content="مِقَصْ — نظام حجز مواعيد الحلاقة وقائمة الانتظار في مصر دون معاملات مالية">
+  <title>مِقَصْ | حجز موعد حلاقة</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="مِقَصْ">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Google Font & Native Stylesheet -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="container">
+    <!-- Brand Header & Visitor Ticker -->
+    <header class="brand-header">
+      <div class="brand-info">
+        <div class="brand-icon">✂️</div>
+        <div>
+          <h1 class="brand-title" id="salon-name-display">مِقَصْ للحلاقة</h1>
+          <p class="brand-tagline" id="salon-status-indicator">جاري التحقق من حالة الصالون...</p>
+        </div>
+      </div>
+      
+      <!-- Live Visitor Counter Badge -->
+      <div class="views-badge" title="إجمالي الزيارات">
+        <span class="views-pulse"></span>
+        <span id="views-count">0</span>
+        <span>زيارة</span>
+      </div>
+    </header>
+
+    <!-- Urgent Pause / Break Banner (Hidden by default) -->
+    <div id="pause-banner" class="pause-banner" style="display: none;">
+      <span style="font-size: 1.5rem;">🛑</span>
+      <div>
+        <div style="font-weight: 800;">الصالون في استراحة قصيرة أو مغلق حالياً</div>
+        <div style="font-size: 0.8rem; opacity: 0.9;">نعتذر منك، الحجز متوقف مؤقتاً. يرجى المحاولة بعد قليل أو في وقت لاحق.</div>
+      </div>
+    </div>
+
+    <!-- Quick Credentials Config Modal (Shown only if default placeholder keys are detected) -->
+    <div id="setup-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <h3 style="color: var(--gold-primary); margin-bottom: 12px; font-size: 1.15rem;">⚙️ ربط قاعدة بيانات Supabase</h3>
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+          مرحباً بك! لتشغيل التطبيق على GitHub Pages مجاناً، أدخل رابط المشروع والمفتاح العام (Anon Key) الخاص بـ Supabase:
+        </p>
+        <div class="form-group">
+          <label class="form-label">Project URL</label>
+          <input type="text" id="setup-url" class="form-control" placeholder="https://xyz.supabase.co" dir="ltr">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Anon / Public Key</label>
+          <input type="password" id="setup-key" class="form-control" placeholder="eyJhbGciOi..." dir="ltr">
+        </div>
+        <button id="btn-save-setup" class="btn btn-primary">حفظ وتشغيل التطبيق 🚀</button>
+        <button type="button" id="btn-demo-mode" class="btn btn-secondary" style="margin-top: 10px;">تشغيل وضع المعاينة السريعة (Live Demo) 💈</button>
+      </div>
+    </div>
+
+    <!-- Main Booking Container -->
+    <main id="booking-container" class="card">
+      
+      <!-- Steps Progress Tracker -->
+      <div class="steps-tracker">
+        <div class="step-item active" id="step-node-1">
+          <div class="step-circle">1</div>
+          <span class="step-label">الخدمة</span>
+        </div>
+        <div class="step-item" id="step-node-2">
+          <div class="step-circle">2</div>
+          <span class="step-label">الميعاد</span>
+        </div>
+        <div class="step-item" id="step-node-3">
+          <div class="step-circle">3</div>
+          <span class="step-label">بياناتك</span>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- STEP 1: SELECT SERVICE                     -->
+      <!-- ========================================== -->
+      <section id="step-1" class="wizard-step">
+        <div class="card-title">
+          <span>💈</span>
+          <span>اختر الخدمة المطلوبة</span>
+        </div>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+          حدد الخدمة عشان نحسب وقتك بدقة ونجهزلك الكرسي في ميعادك.
+        </p>
+
+        <!-- Loading State for Services -->
+        <div id="services-loading" class="empty-state">
+          <div class="spinner" style="margin-inline: auto; margin-bottom: 12px;"></div>
+          <p>جاري تحميل قائمة الخدمات...</p>
+        </div>
+
+        <!-- Dynamic Services Grid -->
+        <div id="services-container" class="services-grid" style="display: none;"></div>
+
+        <!-- Navigation Bar -->
+        <div class="actions-bar">
+          <button id="btn-step-1-next" class="btn btn-primary" disabled>
+            متابعة اختيار الميعاد ←
+          </button>
+        </div>
+      </section>
+
+      <!-- ========================================== -->
+      <!-- STEP 2: SELECT DATE & TIME SLOT           -->
+      <!-- ========================================== -->
+      <section id="step-2" class="wizard-step" style="display: none;">
+        <div class="card-title">
+          <span>📅</span>
+          <span>اختر اليوم والميعاد</span>
+        </div>
+
+        <!-- Selected Service Quick Badge -->
+        <div style="margin-bottom: 16px; padding: 10px 14px; background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.85rem; color: var(--text-secondary);">الخدمة المحددة:</span>
+          <span id="step-2-service-badge" style="font-weight: 700; color: var(--gold-primary); font-size: 0.9rem;">-</span>
+        </div>
+
+        <!-- Date Picker Input -->
+        <div class="form-group">
+          <label class="form-label" for="booking-date">تاريخ الحجز (متاح حتى 7 أيام مقبلة):</label>
+          <input type="date" id="booking-date" class="form-control" style="cursor: pointer;">
+          <span id="date-localized-label" style="display: block; font-size: 0.8rem; color: var(--gold-primary); margin-top: 6px; font-weight: 600;"></span>
+        </div>
+
+        <!-- Time Slots Label -->
+        <div style="margin-top: 20px;">
+          <label class="form-label">الأوقات المتاحة لهذا اليوم:</label>
+          
+          <!-- Slots Loading Spinner -->
+          <div id="slots-loading" class="empty-state" style="display: none; padding: 20px 0;">
+            <div class="spinner" style="margin-inline: auto; margin-bottom: 10px;"></div>
+            <p style="font-size: 0.85rem;">جاري فحص المواعيد الشاغرة...</p>
+          </div>
+
+          <!-- Dynamic Slots Grid -->
+          <div id="slots-container" class="slots-grid"></div>
+
+          <!-- Empty Slots Message -->
+          <div id="slots-empty" class="empty-state" style="display: none;">
+            <div class="empty-icon">⏳</div>
+            <p style="font-weight: 600;">مفيش مواعيد شاغرة متاحة في هذا اليوم</p>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">جرب تختار تاريخ تاني أو تواصل مع الصالون مباشرة.</p>
+          </div>
+        </div>
+
+        <!-- Navigation Bar -->
+        <div class="actions-bar">
+          <button id="btn-step-2-back" class="btn btn-secondary" style="width: 35%;">
+            → رجوع
+          </button>
+          <button id="btn-step-2-next" class="btn btn-primary" style="width: 65%;" disabled>
+            متابعة إدخال بياناتك ←
+          </button>
+        </div>
+      </section>
+
+      <!-- ========================================== -->
+      <!-- STEP 3: CLIENT CONTACT DETAILS            -->
+      <!-- ========================================== -->
+      <section id="step-3" class="wizard-step" style="display: none;">
+        <div class="card-title">
+          <span>👤</span>
+          <span>بيانات تأكيد الحجز</span>
+        </div>
+
+        <!-- Reservation Summary Box -->
+        <div class="summary-box">
+          <div class="summary-item">
+            <span class="summary-label">الخدمة:</span>
+            <span class="summary-value" id="summary-service-name">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">المدة التقديرية:</span>
+            <span class="summary-value" id="summary-duration">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">تاريخ الحجز:</span>
+            <span class="summary-value" id="summary-date">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">الميعاد:</span>
+            <span class="summary-value" style="color: var(--gold-primary);" id="summary-time">-</span>
+          </div>
+        </div>
+
+        <!-- Client Form -->
+        <form id="booking-form" onsubmit="return false;">
+          <div class="form-group">
+            <label class="form-label" for="client-name">الاسم الكريم <span style="color: #ef4444;">*</span></label>
+            <input type="text" id="client-name" class="form-control" placeholder="اكتب اسمك الأول أو بالكامل" required autocomplete="name">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="client-phone">رقم الموبايل المصري <span style="color: #ef4444;">*</span></label>
+            <input type="tel" id="client-phone" class="form-control" placeholder="مثال: 01012345678" maxlength="11" required autocomplete="tel" dir="ltr" style="text-align: right;">
+            <small id="phone-feedback" style="display: block; font-size: 0.78rem; margin-top: 5px; color: var(--text-muted);">
+              يجب أن يبدأ بـ (010 أو 011 أو 012 أو 015) ومكون من 11 رقم.
+            </small>
+          </div>
+
+          <!-- Blacklist Alert (Hidden unless triggered) -->
+          <div id="blacklist-alert" class="pause-banner" style="display: none; margin-top: 12px;">
+            <span>⚠️</span>
+            <div>
+              <div style="font-weight: 700;">تعذر إتمام الحجز</div>
+              <div style="font-size: 0.8rem;">تم تعليق هذا الرقم بسبب التخلف المتكرر عن الحضور. يرجى التواصل مع إدارة الصالون هاتفياً.</div>
+            </div>
+          </div>
+
+          <!-- Navigation Bar -->
+          <div class="actions-bar">
+            <button type="button" id="btn-step-3-back" class="btn btn-secondary" style="width: 35%;">
+              → رجوع
+            </button>
+            <button type="submit" id="btn-submit-booking" class="btn btn-primary" style="width: 65%;">
+              تأكيد الحجز الآن ✨
+            </button>
+          </div>
+        </form>
+      </section>
+
+    </main>
+
+    <!-- ========================================== -->
+    <!-- SUCCESS SCREEN & TICKET MODAL              -->
+    <!-- ========================================== -->
+    <div id="success-screen" class="card" style="display: none; text-align: center;">
+      <div style="font-size: 3rem; margin-bottom: 8px;">🎉</div>
+      <h2 style="color: var(--status-completed); font-size: 1.4rem; font-weight: 800; margin-bottom: 6px;">
+        تم تسجيل حجزك بنجاح!
+      </h2>
+      <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 20px;">
+        مكانك اتحجز في الجدول، مستنينك في الميعاد المحدد بالظبط 💈
+      </p>
+
+      <!-- Digital Queue Ticket -->
+      <div class="ticket-card" style="margin-bottom: 24px;">
+        <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;">تذكرة حجز رقمية</div>
+        <div class="ticket-number" id="ticket-time">--:--</div>
+        <div style="font-weight: 700; font-size: 1.1rem; color: var(--text-primary); margin-bottom: 4px;" id="ticket-client">--</div>
+        <div style="font-size: 0.85rem; color: var(--gold-primary); font-weight: 600;" id="ticket-service">--</div>
+        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px;" id="ticket-date">--</div>
+      </div>
+
+      <!-- Free 1-Tap WhatsApp Confirmation Notification -->
+      <div style="margin-bottom: 20px;">
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+          اضغط هنا لتأكيد الحجز مع الكابتن مباشرة عبر واتساب مجاناً:
+        </p>
+        <a id="btn-whatsapp-confirm" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-whatsapp">
+          <span>💬</span>
+          <span>تأكيد عبر واتساب مع الصالون</span>
+        </a>
+      </div>
+
+      <button id="btn-new-booking" class="btn btn-secondary">
+        حجز موعد إضافي ✂️
+      </button>
+    </div>
+
+    <!-- Minimalist Footer -->
+    <footer style="text-align: center; margin-top: 24px; padding-bottom: 24px; font-size: 0.78rem; color: var(--text-muted);">
+      <div>مِقَصْ (Maqass) — نظام تنظيم وإدارة مواعيد صالونات الحلاقة السحابي</div>
+      <div style="margin-top: 4px; opacity: 0.7;">سريع وخفيف 100% • خالي من المعاملات المالية • جاهز لـ GitHub Pages</div>
+    </footer>
+
+  </div>
+
+  <!-- Native Modular ES6 Client Logic -->
+  <script type="module" src="js/client.js"></script>
+</body>
+</html>

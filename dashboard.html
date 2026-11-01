@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="description" content="مِقَصْ — لوحة تحكم الحلاق وإدارة طابور الانتظار">
+  <title>مِقَصْ | لوحة تحكم الصالون</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="مِقَصْ - لوحة التحكم">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Google Font & Native Stylesheet -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ========================================== -->
+  <!-- 1. AUTHENTICATION GATE (PIN / PASSCODE)    -->
+  <!-- ========================================== -->
+  <div id="login-gate" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="text-align: center;">
+      <div style="font-size: 3rem; margin-bottom: 8px;">💈</div>
+      <h2 style="color: var(--gold-primary); font-size: 1.3rem; font-weight: 800; margin-bottom: 6px;">
+        دخول لوحة تحكم الصالون
+      </h2>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px;">
+        هذه الصفحة مخصصة للحلاق فقط لإدارة المواعيد وقائمة الانتظار.
+      </p>
+
+      <form id="login-form" onsubmit="return false;">
+        <div class="form-group" style="text-align: right;">
+          <label class="form-label" for="login-email">البريد الإلكتروني (Supabase Auth) أو رقم PIN</label>
+          <input type="text" id="login-email" class="form-control" placeholder="barber@maqass.com أو 123456" required dir="ltr">
+        </div>
+
+        <div class="form-group" id="group-login-password" style="text-align: right;">
+          <label class="form-label" for="login-password">كلمة المرور (إذا استخدمت الإيميل)</label>
+          <input type="password" id="login-password" class="form-control" placeholder="••••••••" dir="ltr">
+        </div>
+
+        <button type="submit" id="btn-login-submit" class="btn btn-primary" style="margin-top: 10px;">
+          دخول لوحة التحكم ✂️
+        </button>
+      </form>
+
+      <div style="margin-top: 14px; font-size: 0.78rem; color: var(--text-muted);">
+        الرقم السري الافتراضي السريع: <code style="color: var(--gold-primary);">123456</code>
+      </div>
+
+      <div style="margin-top: 18px;">
+        <a href="index.html" style="font-size: 0.8rem; color: var(--text-muted); text-decoration: none;">
+          ← العودة لصفحة حجز الزبائن
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================== -->
+  <!-- 2. MAIN DASHBOARD WRAPPER                  -->
+  <!-- ========================================== -->
+  <div id="dashboard-wrapper" class="container-wide" style="display: none;">
+    
+    <!-- Top Bar with Salon Profile & Quick Stats -->
+    <header class="brand-header">
+      <div class="brand-info">
+        <div class="brand-icon">💈</div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <h1 class="brand-title" id="dash-salon-name">صالون مِقَصْ</h1>
+            <span class="badge badge-in-progress" id="sync-indicator">
+              <span class="views-pulse" style="background: #3b82f6; box-shadow: 0 0 8px #3b82f6;"></span>
+              <span>محدث لحظياً</span>
+            </span>
+          </div>
+          <p class="brand-tagline">لوحة التحكم السريعة والعمليات الفورية</p>
+        </div>
+      </div>
+
+      <!-- Action items -->
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div class="views-badge" title="إجمالي الزيارات">
+          <span class="views-pulse"></span>
+          <span id="dash-views-count">0</span>
+          <span>زيارة</span>
+        </div>
+
+        <a href="index.html" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto;" title="عرض صفحة الزبون" target="_blank">
+          🌐 الرابط العام
+        </a>
+
+        <button id="btn-logout" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; width: auto; color: #ef4444;" title="تسجيل الخروج">
+          خروج 🚪
+        </button>
+      </div>
+    </header>
+
+    <!-- Busy-Hands Giant Command Bar -->
+    <section class="command-bar">
+      <!-- 1-Tap Pause / Break Mode Toggle -->
+      <button id="btn-toggle-pause" class="btn-giant btn-giant-pause">
+        <span style="font-size: 1.4rem;">🛑</span>
+        <span id="pause-btn-text">إيقاف الحجز مؤقتاً (استراحة)</span>
+      </button>
+
+      <!-- 1-Tap Fast Walk-in Button -->
+      <button id="btn-open-walkin-modal" class="btn-giant btn-giant-walkin">
+        <span style="font-size: 1.4rem;">⚡</span>
+        <span>+ زبون مباشر (Walk-in) الآن</span>
+      </button>
+    </section>
+
+    <!-- Navigation Tabs Bar -->
+    <nav class="tabs-bar">
+      <button class="tab-btn active" data-tab="tab-queue" id="tab-btn-queue">
+        <span>📅</span>
+        <span>جدول وطابور اليوم</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-stats" id="tab-btn-stats">
+        <span>📊</span>
+        <span>إحصائيات الأداء</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-settings" id="tab-btn-settings">
+        <span>⚙️</span>
+        <span>إعدادات الصالون والحظر</span>
+      </button>
+    </nav>
+
+    <!-- ========================================== -->
+    <!-- TAB 1: ACTIVE QUEUE & TIMELINE             -->
+    <!-- ========================================== -->
+    <main id="tab-queue" class="tab-content">
+      
+      <!-- Date Picker & Queue Header -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <input type="date" id="queue-date-picker" class="form-control" style="width: auto; padding: 8px 12px; font-weight: 700; cursor: pointer;">
+          <button id="btn-today-shortcut" class="btn btn-secondary" style="width: auto; padding: 8px 14px; font-size: 0.85rem;">
+            اليوم
+          </button>
+        </div>
+
+        <!-- Live Queue Counter Tag -->
+        <div id="queue-summary-tag" style="font-size: 0.9rem; font-weight: 700; color: var(--gold-primary);">
+          جاري التحميل...
+        </div>
+      </div>
+
+      <!-- Queue Cards Container -->
+      <div id="queue-cards-container">
+        <!-- Rendered Dynamically via dashboard.js -->
+        <div class="empty-state">
+          <div class="spinner" style="margin-inline: auto; margin-bottom: 10px;"></div>
+          <p>جاري تحميل طابور اليوم...</p>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- ========================================== -->
+    <!-- TAB 2: OPERATIONAL METRICS (NO MONEY)      -->
+    <!-- ========================================== -->
+    <section id="tab-stats" class="tab-content" style="display: none;">
+      
+      <!-- Metrics Overview Cards -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-number" style="color: var(--status-completed);" id="stat-completed">0</div>
+          <div class="metric-title">تمت خدمتهم اليوم</div>
+          <div class="metric-subtitle">زبائن انتهت حلاقتهم</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-number" style="color: var(--status-in-progress);" id="stat-pending">0</div>
+          <div class="metric-title">في الانتظار / على الكرسي</div>
+          <div class="metric-subtitle">مواعيد قادمة اليوم</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-number" style="color: var(--status-cancelled);" id="stat-noshow">0</div>
+          <div class="metric-title">لم يحضروا (غياب)</div>
+          <div class="metric-subtitle">مواعيد مهدرة</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-number" style="color: var(--gold-primary);" id="stat-showup-rate">100%</div>
+          <div class="metric-title">نسبة الالتزام بالحضور</div>
+          <div class="metric-subtitle">Show-Up Rate</div>
+        </div>
+      </div>
+
+      <!-- Service Counts Breakdown -->
+      <div class="card">
+        <div class="card-title">
+          <span>✂️</span>
+          <span>توزيع الخدمات المنفذة اليوم</span>
+        </div>
+        <div id="services-breakdown-list" style="display: flex; flex-direction: column; gap: 8px;">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ========================================== -->
+    <!-- TAB 3: SELF-SERVICE SETTINGS & BLACKLIST   -->
+    <!-- ========================================== -->
+    <section id="tab-settings" class="tab-content" style="display: none;">
+      
+      <!-- 1. Services Management -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+          <div class="card-title" style="margin-bottom: 0; border-bottom: none;">
+            <span>💈</span>
+            <span>قائمة الخدمات المعروضة</span>
+          </div>
+          <button id="btn-add-service-modal" class="btn btn-primary" style="width: auto; padding: 6px 14px; font-size: 0.85rem;">
+            + إضافة خدمة جديدة
+          </button>
+        </div>
+
+        <div id="services-manage-list">
+          <!-- Loaded dynamically -->
+        </div>
+      </div>
+
+      <!-- 2. Salon Contact & Working Hours -->
+      <div class="card">
+        <div class="card-title">
+          <span>⏰</span>
+          <span>بيانات الصالون ومواعيد العمل</span>
+        </div>
+
+        <form id="salon-settings-form" onsubmit="return false;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">اسم الصالون</label>
+              <input type="text" id="setting-salon-name" class="form-control" required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">رقم هاتف الواتساب (للتأكيدات)</label>
+              <input type="tel" id="setting-salon-phone" class="form-control" required dir="ltr">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">ساعات العمل الأسبوعية (فتح - إغلاق)</label>
+            <div id="working-hours-inputs" style="display: flex; flex-direction: column; gap: 8px;">
+              <!-- Dynamic day rows -->
+            </div>
+          </div>
+
+          <button type="submit" id="btn-save-settings" class="btn btn-primary">
+            حفظ إعدادات ومواعيد الصالون ✨
+          </button>
+        </form>
+      </div>
+
+      <!-- 3. Blacklist Table -->
+      <div class="card">
+        <div class="card-title">
+          <span>🚫</span>
+          <span>القائمة السوداء (العملاء المحظورون)</span>
+        </div>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+          العميل الذي يتخلف عن الحضور مرتين (2 No-Shows) يتم حظره تلقائياً من الحجز أونلاين. يمكنك فك الحظر بنقرة واحدة أدناه.
+        </p>
+
+        <div class="table-container">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>رقم الهاتف</th>
+                <th>عدد مرات الغياب</th>
+                <th>حالة الحظر</th>
+                <th>إجراء فوري</th>
+              </tr>
+            </thead>
+            <tbody id="blacklist-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <!-- ========================================== -->
+  <!-- MODAL: FAST WALK-IN 1-TAP PICKER           -->
+  <!-- ========================================== -->
+  <div id="walkin-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h3 style="color: var(--gold-primary); font-size: 1.15rem; font-weight: 800;">
+          ⚡ زبون مباشر (Walk-in)
+        </h3>
+        <button id="btn-close-walkin-modal" style="background: none; border: none; font-size: 1.4rem; color: var(--text-muted); cursor: pointer;">✕</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+        اختر الخدمة للزبون الجالس أمامك لقفل الكرسي فوراً في أقرب خانة متاحة ومنع الحجز المزدوج:
+      </p>
+
+      <div id="walkin-services-grid" class="services-grid" style="margin-bottom: 16px;">
+        <!-- Filled dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================== -->
+  <!-- MODAL: ADD / EDIT SERVICE                  -->
+  <!-- ========================================== -->
+  <div id="service-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h3 id="service-modal-title" style="color: var(--gold-primary); font-size: 1.15rem; font-weight: 800;">
+          إضافة خدمة جديدة
+        </h3>
+        <button id="btn-close-service-modal" style="background: none; border: none; font-size: 1.4rem; color: var(--text-muted); cursor: pointer;">✕</button>
+      </div>
+
+      <form id="service-form" onsubmit="return false;">
+        <input type="hidden" id="service-id-input">
+        <div class="form-group">
+          <label class="form-label">اسم الخدمة</label>
+          <input type="text" id="service-name-input" class="form-control" placeholder="مثال: قص شعر واستشوار" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">المدة الزمنية (بالدقائق)</label>
+          <input type="number" id="service-duration-input" class="form-control" placeholder="30" min="5" max="180" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">السعر الاسترشادي (للعرض فقط)</label>
+          <input type="number" id="service-price-input" class="form-control" placeholder="70" min="0" required>
+        </div>
+        <button type="submit" id="btn-save-service" class="btn btn-primary" style="margin-top: 10px;">
+          حفظ الخدمة ✨
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Native Modular ES6 Dashboard Controller -->
+  <script type="module" src="js/dashboard.js"></script>
+</body>
+</html>

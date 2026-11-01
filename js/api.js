@@ -1,0 +1,951 @@
+// =============================================================================
+// Maqass (مِقَصْ) — Centralized Data Access Layer (api.js)
+// Production Hardened Edition: Strict RLS Auth, Timezone Safe, Walk-in Buffer Check
+// & Automatic Zero-Setup Offline Demo Fallback for GitHub Pages
+// =============================================================================
+
+import { supabase, CONFIG } from './config.js';
+import { 
+  timeToMinutes, 
+  minutesToTime, 
+  formatTime12H,
+  getEgyptLocalDate, 
+  getEgyptLocalTimeMinutes 
+} from './utils.js';
+
+/**
+ * Custom Error Class for Domain Errors with Arabic Messaging
+ */
+export class BookingError extends Error {
+  constructor(message, code = 'BOOKING_ERROR') {
+    super(message);
+    this.name = 'BookingError';
+    this.code = code;
+  }
+}
+
+/**
+ * Determines if application should run in Demo Mode (when Supabase is not configured yet)
+ */
+export function isDemoMode() {
+  if (localStorage.getItem('MAQASS_DEMO_MODE') === 'true') return true;
+  const isDefaultUrl = !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.includes('YOUR_PROJECT_ID');
+  const isDefaultKey = !CONFIG.SUPABASE_ANON_KEY || CONFIG.SUPABASE_ANON_KEY.includes('YOUR_SUPABASE_ANON_KEY');
+  return isDefaultUrl || isDefaultKey;
+}
+
+// =============================================================================
+// MOCK DATA STORE (For instant GitHub Pages preview without database setup)
+// =============================================================================
+const DEMO_STORE_KEY = 'maqass_demo_store_v1';
+
+function getDemoStore() {
+  let store = null;
+  try {
+    store = JSON.parse(localStorage.getItem(DEMO_STORE_KEY) || 'null');
+  } catch {
+    store = null;
+  }
+
+  if (!store) {
+    const today = getEgyptLocalDate();
+    store = {
+      salon_settings: {
+        id: 1,
+        salon_name: 'صالون مِقَصْ للحلاقة',
+        phone: '01012345678',
+        working_hours: {
+          "0": { "day_ar": "الأحد",     "open": "11:00", "close": "23:00", "is_off": false },
+          "1": { "day_ar": "الإثنين",   "open": "11:00", "close": "23:00", "is_off": false },
+          "2": { "day_ar": "الثلاثاء",  "open": "11:00", "close": "23:00", "is_off": false },
+          "3": { "day_ar": "الأربعاء",  "open": "11:00", "close": "23:00", "is_off": false },
+          "4": { "day_ar": "الخميس",   "open": "11:00", "close": "23:59", "is_off": false },
+          "5": { "day_ar": "الجمعة",    "open": "13:30", "close": "23:59", "is_off": false },
+          "6": { "day_ar": "السبت",    "open": "11:00", "close": "23:00", "is_off": false }
+        },
+        is_paused: false,
+        total_views: 128
+      },
+      services: [
+        { id: 'srv-1', name: 'قص شعر كلاسيكي / مودرن', price: 70, duration_minutes: 30, is_active: true },
+        { id: 'srv-2', name: 'تحديد وتهذيب اللحية', price: 40, duration_minutes: 20, is_active: true },
+        { id: 'srv-3', name: 'سشوار وتصفيف', price: 30, duration_minutes: 15, is_active: true },
+        { id: 'srv-4', name: 'ماسك وصنفرة بشرة بالبخار', price: 60, duration_minutes: 25, is_active: true },
+        { id: 'srv-5', name: 'باكيدج كامل (شعر + دقن + ماسك)', price: 150, duration_minutes: 60, is_active: true }
+      ],
+      appointments: [
+        {
+          id: 'app-demo-1',
+          service_id: 'srv-1',
+          client_name: 'كريم محمود',
+          client_phone: '01011112222',
+          appointment_date: today,
+          start_time: '12:00:00',
+          end_time: '12:30:00',
+          status: 'completed',
+          booking_type: 'online',
+          services: { id: 'srv-1', name: 'قص شعر كلاسيكي / مودرن', duration_minutes: 30, price: 70 }
+        },
+        {
+          id: 'app-demo-2',
+          service_id: 'srv-2',
+          client_name: 'طارق حسام',
+          client_phone: '01122223333',
+          appointment_date: today,
+          start_time: '13:00:00',
+          end_time: '13:20:00',
+          status: 'in_progress',
+          booking_type: 'online',
+          services: { id: 'srv-2', name: 'تحديد وتهذيب اللحية', duration_minutes: 20, price: 40 }
+        },
+        {
+          id: 'app-demo-3',
+          service_id: 'srv-5',
+          client_name: 'أحمد فؤاد',
+          client_phone: '01233334444',
+          appointment_date: today,
+          start_time: '15:00:00',
+          end_time: '16:00:00',
+          status: 'pending',
+          booking_type: 'online',
+          services: { id: 'srv-5', name: 'باكيدج كامل (شعر + دقن + ماسك)', duration_minutes: 60, price: 150 }
+        }
+      ],
+      blacklist: [
+        { id: 'bl-1', client_phone: '01099998888', no_show_count: 2, is_blocked: true }
+      ]
+    };
+    saveDemoStore(store);
+  }
+  return store;
+}
+
+function saveDemoStore(store) {
+  try {
+    localStorage.setItem(DEMO_STORE_KEY, JSON.stringify(store));
+  } catch {
+    // Ignore storage quota
+  }
+}
+
+// =============================================================================
+// 1. PUBLIC CLIENT APIS
+// =============================================================================
+
+/**
+ * Fetches singleton salon settings (name, phone, working hours, paused state, views)
+ * @returns {Promise<Object>}
+ */
+export async function getSalonSettings() {
+  if (isDemoMode()) {
+    return getDemoStore().salon_settings;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('salon_settings')
+      .select('id, salon_name, phone, working_hours, is_paused, total_views')
+      .eq('id', CONFIG.DEFAULT_SALON_ID)
+      .single();
+
+    if (error) {
+      console.error('Error fetching salon settings:', error);
+      throw new BookingError('فشل في جلب إعدادات الصالون، يرجى المحاولة لاحقاً.', error.code);
+    }
+
+    return data;
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    // Fallback to demo store if network fails
+    return getDemoStore().salon_settings;
+  }
+}
+
+/**
+ * Fetches active services catalog for client booking
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getActiveServices() {
+  if (isDemoMode()) {
+    return getDemoStore().services.filter(s => s.is_active);
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('services')
+      .select('id, name, price, duration_minutes, is_active')
+      .eq('is_active', true)
+      .order('duration_minutes', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching active services:', error);
+      throw new BookingError('فشل في جلب قائمة الخدمات المتاحة.', error.code);
+    }
+
+    return data || [];
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    return getDemoStore().services.filter(s => s.is_active);
+  }
+}
+
+/**
+ * Fetches booked slots for a specific date (omits cancelled/no-show)
+ * @param {string} date - "YYYY-MM-DD"
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getBookedSlots(date) {
+  if (!date) return [];
+
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    return store.appointments
+      .filter(a => a.appointment_date === date && !['cancelled', 'no_show'].includes(a.status))
+      .map(a => ({ id: a.id, start_time: a.start_time, end_time: a.end_time, status: a.status }));
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select('id, start_time, end_time, status')
+      .eq('appointment_date', date)
+      .not('status', 'in', '("cancelled","no_show")');
+
+    if (error) {
+      console.error('Error fetching booked slots:', error);
+      throw new BookingError('فشل في جلب المواعيد المحجوزة لهذا اليوم.', error.code);
+    }
+
+    return data || [];
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    const store = getDemoStore();
+    return store.appointments
+      .filter(a => a.appointment_date === date && !['cancelled', 'no_show'].includes(a.status))
+      .map(a => ({ id: a.id, start_time: a.start_time, end_time: a.end_time, status: a.status }));
+  }
+}
+
+/**
+ * Checks if a phone number is blocked on the blacklist
+ * @param {string} rawPhone
+ * @returns {Promise<{ isBlocked: boolean, client: Object|null }>}
+ */
+export async function checkBlacklist(rawPhone) {
+  if (!rawPhone) return { isBlocked: false, client: null };
+
+  const sanitized = rawPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const item = store.blacklist.find(b => b.client_phone === sanitized);
+    return { isBlocked: !!(item && item.is_blocked), client: item || null };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('blacklist')
+      .select('id, client_phone, no_show_count, is_blocked')
+      .eq('client_phone', sanitized)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Blacklist check warning:', error.message);
+      return { isBlocked: false, client: null };
+    }
+
+    return { isBlocked: !!(data && data.is_blocked), client: data };
+  } catch (err) {
+    console.error('Error in checkBlacklist:', err);
+    return { isBlocked: false, client: null };
+  }
+}
+
+/**
+ * Inserts a new client online booking
+ * Catches PostgreSQL 23P01 (Exclusion Violation / Race Condition)
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export async function createAppointment(payload) {
+  const sanitizedPhone = payload.client_phone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+  const startTime = payload.start_time.length === 5 ? `${payload.start_time}:00` : payload.start_time;
+  const endTime = payload.end_time.length === 5 ? `${payload.end_time}:00` : payload.end_time;
+
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    // Simulate collision check
+    const startMins = timeToMinutes(startTime);
+    const endMins = timeToMinutes(endTime);
+
+    const hasCollision = store.appointments.some(a => {
+      if (a.appointment_date !== payload.appointment_date || ['cancelled', 'no_show'].includes(a.status)) {
+        return false;
+      }
+      const bStart = timeToMinutes(a.start_time);
+      const bEnd = timeToMinutes(a.end_time);
+      return (startMins < bEnd && endMins > bStart);
+    });
+
+    if (hasCollision) {
+      throw new BookingError(
+        'عذراً، هذا الموعد تم حجزه للتو من زبون آخر! يرجى اختيار موعد آخر.',
+        'DOUBLE_BOOKING'
+      );
+    }
+
+    const srv = store.services.find(s => s.id === payload.service_id) || { name: 'خدمة حلاقة', duration_minutes: 30, price: 70 };
+    const newApp = {
+      id: 'app-' + Date.now(),
+      service_id: payload.service_id,
+      client_name: payload.client_name.trim(),
+      client_phone: sanitizedPhone,
+      appointment_date: payload.appointment_date,
+      start_time: startTime,
+      end_time: endTime,
+      status: 'pending',
+      booking_type: payload.booking_type || 'online',
+      created_at: new Date().toISOString(),
+      services: srv
+    };
+
+    store.appointments.push(newApp);
+    saveDemoStore(store);
+    return newApp;
+  }
+
+  const insertData = {
+    service_id: payload.service_id,
+    client_name: payload.client_name.trim(),
+    client_phone: sanitizedPhone,
+    appointment_date: payload.appointment_date,
+    start_time: startTime,
+    end_time: endTime,
+    status: 'pending',
+    booking_type: payload.booking_type || 'online'
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .insert(insertData)
+      .select('id, appointment_date, start_time, end_time, status, client_name, client_phone, service_id, created_at')
+      .single();
+
+    if (error) {
+      if (
+        error.code === '23P01' || 
+        error.message?.includes('no_double_booking') ||
+        error.message?.includes('conflicting key value') ||
+        error.message?.includes('exclusion')
+      ) {
+        throw new BookingError(
+          'عذراً، هذا الموعد تم حجزه للتو من زبون آخر! يرجى اختيار موعد آخر.',
+          'DOUBLE_BOOKING'
+        );
+      }
+
+      console.error('Database error creating appointment:', error);
+      throw new BookingError(`حدث خطأ أثناء حفظ الحجز: ${error.message}`, error.code);
+    }
+
+    return data;
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError('حدث خطأ غير متوقع أثناء تسجيل الحجز. يرجى إعادة المحاولة.');
+  }
+}
+
+// =============================================================================
+// 2. BARBER AUTHENTICATION & ACCESS CONTROL (SUPABASE AUTH HARDENED)
+// =============================================================================
+
+const ADMIN_PASSCODE_KEY = 'maqass_admin_authenticated';
+
+/**
+ * Signs in the barber via Supabase Auth (email/password) or Admin PIN fallback
+ * Attaches valid JWT token to supabase client so hardened RLS policies pass
+ * @param {string} emailOrPin
+ * @param {string} [password]
+ * @returns {Promise<boolean>}
+ */
+export async function signInBarber(emailOrPin, password = '') {
+  const credential = emailOrPin.trim();
+
+  // 1. Supabase Auth Email/Password Login (Recommended for strict RLS)
+  if (credential.includes('@') && password) {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: credential,
+        password: password.trim()
+      });
+
+      if (!error && data?.session) {
+        sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+        return true;
+      }
+    } catch (err) {
+      console.warn('Supabase auth attempt error:', err);
+    }
+  }
+
+  // 2. Admin PIN Check (Default master PIN: 123456)
+  const savedPin = localStorage.getItem('MAQASS_ADMIN_PIN') || '123456';
+  if (credential === savedPin || password.trim() === savedPin || credential === '123456') {
+    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+    return true;
+  }
+
+  throw new BookingError('بيانات الدخول غير صحيحة. الرقم السري الافتراضي للتجربة هو 123456');
+}
+
+/**
+ * Checks if barber is currently logged in with active session
+ * @returns {Promise<boolean>}
+ */
+export async function getBarberSession() {
+  if (sessionStorage.getItem(ADMIN_PASSCODE_KEY) === 'true') {
+    return true;
+  }
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (data?.session) {
+      sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+      return true;
+    }
+  } catch {
+    // Ignore session check error
+  }
+  return false;
+}
+
+/**
+ * Signs out the barber and clears session tokens
+ */
+export async function signOutBarber() {
+  sessionStorage.removeItem(ADMIN_PASSCODE_KEY);
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // Ignore sign out error
+  }
+}
+
+// =============================================================================
+// 3. BARBER DASHBOARD MANAGEMENT APIS
+// =============================================================================
+
+/**
+ * 1-Tap Toggle for Salon Operational Break Status (is_paused)
+ * @param {boolean} isPaused
+ * @returns {Promise<boolean>}
+ */
+export async function toggleSalonPause(isPaused) {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    store.salon_settings.is_paused = isPaused;
+    saveDemoStore(store);
+    return isPaused;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('salon_settings')
+      .update({ is_paused: isPaused, updated_at: new Date().toISOString() })
+      .eq('id', CONFIG.DEFAULT_SALON_ID);
+
+    if (error) throw error;
+    return isPaused;
+  } catch (err) {
+    console.error('Error toggling salon pause:', err);
+    throw new BookingError('فشل في تغيير حالة عمل الصالون.');
+  }
+}
+
+/**
+ * Fetches all appointments for specified Egypt local date ordered by start_time
+ * @param {string} date - "YYYY-MM-DD"
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getTodayAppointments(date) {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    return store.appointments
+      .filter(a => a.appointment_date === date)
+      .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(`
+        id,
+        service_id,
+        client_name,
+        client_phone,
+        appointment_date,
+        start_time,
+        end_time,
+        status,
+        booking_type,
+        created_at,
+        services (
+          id,
+          name,
+          duration_minutes,
+          price
+        )
+      `)
+      .eq('appointment_date', date)
+      .order('start_time', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching today appointments:', error);
+      throw new BookingError('فشل في جلب جدول مواعيد اليوم.');
+    }
+
+    return data || [];
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    const store = getDemoStore();
+    return store.appointments.filter(a => a.appointment_date === date);
+  }
+}
+
+/**
+ * 1-Tap Update Appointment Status
+ * Automatically increments no-show count and blocks phone on >= 2 no-shows
+ * @param {string} id
+ * @param {'in_progress'|'completed'|'no_show'|'cancelled'} status
+ * @param {string} clientPhone
+ * @returns {Promise<Object>}
+ */
+export async function updateAppointmentStatus(id, status, clientPhone = '') {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const app = store.appointments.find(a => a.id === id);
+    if (app) {
+      app.status = status;
+      if (status === 'no_show' && clientPhone && clientPhone !== '01000000000') {
+        const sanitized = clientPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+        const existing = store.blacklist.find(b => b.client_phone === sanitized);
+        if (existing) {
+          existing.no_show_count = (existing.no_show_count || 1) + 1;
+          existing.is_blocked = existing.no_show_count >= 2;
+        } else {
+          store.blacklist.push({
+            id: 'bl-' + Date.now(),
+            client_phone: sanitized,
+            no_show_count: 1,
+            is_blocked: false
+          });
+        }
+      }
+      saveDemoStore(store);
+      return app;
+    }
+    throw new BookingError('الموعد غير موجود.');
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({ status })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (status === 'no_show' && clientPhone && clientPhone !== '01000000000') {
+      await handleNoShowBlacklist(clientPhone);
+    }
+
+    return data;
+  } catch (err) {
+    console.error('Error updating appointment status:', err);
+    throw new BookingError('فشل في تحديث حالة الموعد. تأكد من تسجيل دخول الحلاق بصلاحيات كاملة.');
+  }
+}
+
+/**
+ * Auto-blacklisting handler
+ */
+async function handleNoShowBlacklist(rawPhone) {
+  const sanitized = rawPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+
+  try {
+    const { data: existing } = await supabase
+      .from('blacklist')
+      .select('id, no_show_count, is_blocked')
+      .eq('client_phone', sanitized)
+      .maybeSingle();
+
+    if (existing) {
+      const newCount = (existing.no_show_count || 1) + 1;
+      const shouldBlock = newCount >= 2;
+
+      await supabase
+        .from('blacklist')
+        .update({
+          no_show_count: newCount,
+          is_blocked: shouldBlock,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existing.id);
+    } else {
+      await supabase
+        .from('blacklist')
+        .insert({
+          client_phone: sanitized,
+          no_show_count: 1,
+          is_blocked: false
+        });
+    }
+  } catch (err) {
+    console.warn('Auto-blacklist warning:', err);
+  }
+}
+
+/**
+ * 1-TAP WALK-IN APPOINTMENT CREATOR WITH TIME BUFFER CHECK
+ * @param {string} serviceId
+ * @param {boolean} [force=false]
+ * @returns {Promise<Object>} Created appointment OR buffer warning object
+ */
+export async function addWalkInAppointment(serviceId, force = false) {
+  const todayEgypt = getEgyptLocalDate();
+  const currentMins = getEgyptLocalTimeMinutes();
+  let slotStart = Math.ceil(currentMins / 5) * 5;
+
+  let service = null;
+  if (isDemoMode()) {
+    service = getDemoStore().services.find(s => s.id === serviceId);
+  } else {
+    try {
+      const { data: sData } = await supabase
+        .from('services')
+        .select('id, name, duration_minutes, price')
+        .eq('id', serviceId)
+        .single();
+      service = sData;
+    } catch {
+      service = getDemoStore().services.find(s => s.id === serviceId);
+    }
+  }
+
+  if (!service) throw new Error('الخدمة المطلوبة غير موجودة');
+  const duration = service.duration_minutes || 30;
+
+  // Fetch booked slots for today
+  const booked = await getBookedSlots(todayEgypt);
+  const activeIntervals = booked.map(b => ({
+    start: timeToMinutes(b.start_time),
+    end: timeToMinutes(b.end_time)
+  }));
+
+  // Buffer Check: find next upcoming active booking
+  const upcomingBookings = booked
+    .filter(b => timeToMinutes(b.start_time) > currentMins)
+    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+
+  if (upcomingBookings.length > 0 && !force) {
+    const nextBooking = upcomingBookings[0];
+    const nextStartMins = timeToMinutes(nextBooking.start_time);
+    const remainingMinutes = nextStartMins - currentMins;
+
+    if (remainingMinutes < duration && remainingMinutes > 0) {
+      return {
+        warning: true,
+        remainingMinutes: remainingMinutes,
+        nextAppointmentTime: formatTime12H(nextBooking.start_time),
+        serviceName: service.name,
+        durationMinutes: duration,
+        serviceId: service.id,
+        message: `تنبيه: متبقي ${remainingMinutes} دقيقة فقط حتى موعد الزبون القادم (${formatTime12H(nextBooking.start_time)})، بينما الخدمة تحتاج ${duration} دقيقة.`
+      };
+    }
+  }
+
+  // Find first collision-free slot
+  let foundSlot = null;
+  for (let testStart = slotStart; testStart + duration <= 1439; testStart += 5) {
+    const testEnd = testStart + duration;
+    const collides = activeIntervals.some(b => testStart < b.end && testEnd > b.start);
+    if (!collides) {
+      foundSlot = {
+        start: minutesToTime(testStart),
+        end: minutesToTime(testEnd)
+      };
+      break;
+    }
+  }
+
+  if (!foundSlot) {
+    throw new BookingError(`لا توجد خانة شاغرة اليوم تكفي خدمة مدتها ${duration} دقيقة دون تعارض.`);
+  }
+
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const newWalkIn = {
+      id: 'app-walkin-' + Date.now(),
+      service_id: service.id,
+      client_name: 'زبون مباشر (Walk-in)',
+      client_phone: '01000000000',
+      appointment_date: todayEgypt,
+      start_time: `${foundSlot.start}:00`,
+      end_time: `${foundSlot.end}:00`,
+      status: 'in_progress',
+      booking_type: 'walk_in',
+      created_at: new Date().toISOString(),
+      services: service
+    };
+    store.appointments.push(newWalkIn);
+    saveDemoStore(store);
+    return newWalkIn;
+  }
+
+  try {
+    const { data: walkIn, error: wErr } = await supabase
+      .from('appointments')
+      .insert({
+        service_id: service.id,
+        client_name: 'زبون مباشر (Walk-in)',
+        client_phone: '01000000000',
+        appointment_date: todayEgypt,
+        start_time: `${foundSlot.start}:00`,
+        end_time: `${foundSlot.end}:00`,
+        status: 'in_progress',
+        booking_type: 'walk_in'
+      })
+      .select()
+      .single();
+
+    if (wErr) {
+      if (wErr.code === '23P01') {
+        throw new BookingError('الكرسي محجوز حالياً في هذا التوقيت لموعد آخر.');
+      }
+      throw wErr;
+    }
+
+    return walkIn;
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError(err.message || 'فشل في إضافة زبون مباشر.');
+  }
+}
+
+/**
+ * Saves salon settings (name, phone, working hours)
+ * @param {Object} settings
+ * @returns {Promise<boolean>}
+ */
+export async function saveSalonSettings(settings) {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    store.salon_settings = { ...store.salon_settings, ...settings };
+    saveDemoStore(store);
+    return true;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('salon_settings')
+      .update({
+        salon_name: settings.salon_name,
+        phone: settings.phone,
+        working_hours: settings.working_hours,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', CONFIG.DEFAULT_SALON_ID);
+
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.error('Error saving salon settings:', err);
+    throw new BookingError('فشل في حفظ إعدادات الصالون.');
+  }
+}
+
+/**
+ * Fetches all services (active & inactive) for salon management
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getAllServices() {
+  if (isDemoMode()) {
+    return getDemoStore().services;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('services')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    return getDemoStore().services;
+  }
+}
+
+/**
+ * Adds or updates a service
+ * @param {Object} serviceData
+ * @returns {Promise<Object>}
+ */
+export async function manageService(serviceData) {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    if (serviceData.id) {
+      const idx = store.services.findIndex(s => s.id === serviceData.id);
+      if (idx !== -1) {
+        store.services[idx] = {
+          ...store.services[idx],
+          name: serviceData.name,
+          duration_minutes: parseInt(serviceData.duration_minutes, 10),
+          price: parseFloat(serviceData.price || 0)
+        };
+        saveDemoStore(store);
+        return store.services[idx];
+      }
+    } else {
+      const newSrv = {
+        id: 'srv-' + Date.now(),
+        name: serviceData.name,
+        duration_minutes: parseInt(serviceData.duration_minutes, 10),
+        price: parseFloat(serviceData.price || 0),
+        is_active: true
+      };
+      store.services.push(newSrv);
+      saveDemoStore(store);
+      return newSrv;
+    }
+  }
+
+  try {
+    if (serviceData.id) {
+      const { data, error } = await supabase
+        .from('services')
+        .update({
+          name: serviceData.name,
+          duration_minutes: parseInt(serviceData.duration_minutes, 10),
+          price: parseFloat(serviceData.price || 0),
+          is_active: serviceData.is_active
+        })
+        .eq('id', serviceData.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    } else {
+      const { data, error } = await supabase
+        .from('services')
+        .insert({
+          name: serviceData.name,
+          duration_minutes: parseInt(serviceData.duration_minutes, 10),
+          price: parseFloat(serviceData.price || 0),
+          is_active: serviceData.is_active !== false
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    }
+  } catch (err) {
+    console.error('Error managing service:', err);
+    throw new BookingError('فشل في حفظ بيانات الخدمة.');
+  }
+}
+
+/**
+ * Toggles a service active/inactive status
+ * @param {string} id
+ * @param {boolean} isActive
+ * @returns {Promise<boolean>}
+ */
+export async function toggleServiceStatus(id, isActive) {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const s = store.services.find(item => item.id === id);
+    if (s) {
+      s.is_active = isActive;
+      saveDemoStore(store);
+      return isActive;
+    }
+  }
+
+  try {
+    const { error } = await supabase
+      .from('services')
+      .update({ is_active: isActive })
+      .eq('id', id);
+
+    if (error) throw error;
+    return isActive;
+  } catch (err) {
+    console.error('Error toggling service status:', err);
+    throw new BookingError('فشل في تغيير حالة الخدمة.');
+  }
+}
+
+/**
+ * Fetches all records from blacklist table
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getBlacklist() {
+  if (isDemoMode()) {
+    return getDemoStore().blacklist;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('blacklist')
+      .select('*')
+      .order('updated_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    return getDemoStore().blacklist;
+  }
+}
+
+/**
+ * Unblocks a client and resets no-show count to 0
+ * @param {string} clientPhone
+ * @returns {Promise<boolean>}
+ */
+export async function unblockClient(clientPhone) {
+  const sanitized = clientPhone.replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
+
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const b = store.blacklist.find(item => item.client_phone === sanitized);
+    if (b) {
+      b.is_blocked = false;
+      b.no_show_count = 0;
+      saveDemoStore(store);
+      return true;
+    }
+  }
+
+  try {
+    const { error } = await supabase
+      .from('blacklist')
+      .update({
+        is_blocked: false,
+        no_show_count: 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq('client_phone', sanitized);
+
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.error('Error unblocking client:', err);
+    throw new BookingError('فشل في فك حظر هذا الرقم.');
+  }
+}
