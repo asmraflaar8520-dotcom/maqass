@@ -371,3 +371,27 @@ $$;
 
 GRANT EXECUTE ON FUNCTION increment_views() TO anon;
 GRANT EXECUTE ON FUNCTION increment_views() TO authenticated;
+
+-- =============================================================================
+-- 10. AUTO-CONFIRM USERS TRIGGER (Zero Email Friction for Barbers)
+-- Automatically activates any newly registered salon user immediately so they
+-- can log in without waiting for or clicking email confirmation links.
+-- =============================================================================
+CREATE OR REPLACE FUNCTION public.auto_confirm_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.email_confirmed_at = COALESCE(NEW.email_confirmed_at, now());
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_auto_confirm ON auth.users;
+CREATE TRIGGER on_auth_user_created_auto_confirm
+  BEFORE INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.auto_confirm_new_user();
+
+-- Auto-confirm any existing unconfirmed users
+UPDATE auth.users 
+SET email_confirmed_at = now() 
+WHERE email_confirmed_at IS NULL;

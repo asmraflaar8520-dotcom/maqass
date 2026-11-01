@@ -487,7 +487,7 @@ const ADMIN_PASSCODE_KEY = 'maqass_admin_authenticated';
  * @returns {Promise<boolean>}
  */
 export async function signInBarber(email, password = '') {
-  const cleanEmail = (email || '').trim();
+  const cleanEmail = (email || '').trim().toLowerCase();
   const cleanPassword = (password || '').trim();
 
   if (!cleanEmail || !cleanPassword) {
@@ -561,7 +561,7 @@ export async function signOutBarber() {
  * @returns {Promise<Object>} Created salon and barbers list
  */
 export async function signUpNewSalon({ email, password, salonName, phone, barberType = 'single', barberNames = '' }) {
-  const cleanEmail = (email || '').trim();
+  const cleanEmail = (email || '').trim().toLowerCase();
   const cleanPassword = (password || '').trim();
   const cleanName = (salonName || '').trim() || 'صالون الحلاقة';
   const cleanPhone = (phone || '').trim().replace(/\s+/g, '').replace(/^(\+20|0020)/, '0');
