@@ -58,7 +58,12 @@
         </div>
 
         <div class="form-group" id="group-login-password" style="text-align: right;">
-          <label class="form-label" for="login-password">كلمة المرور</label>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="form-label" for="login-password" style="margin-bottom: 0;">كلمة المرور</label>
+            <button type="button" id="btn-forgot-password" style="background: none; border: none; color: var(--gold-primary); font-size: 0.78rem; cursor: pointer; text-decoration: underline; padding: 0;">
+              نسيت كلمة المرور؟
+            </button>
+          </div>
           <input type="password" id="login-password" class="form-control" placeholder="••••••••" required autocomplete="current-password" dir="ltr">
         </div>
 

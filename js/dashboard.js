@@ -22,6 +22,7 @@ import {
   unblockClient,
   signInBarber,
   signUpNewSalon,
+  resetBarberPassword,
   signOutBarber,
   getBarberSession
 } from './api.js';
@@ -57,6 +58,7 @@ const DOM = {
   loginPassword: document.getElementById('login-password'),
   loginErrorAlert: document.getElementById('login-error-alert'),
   loginErrorText: document.getElementById('login-error-text'),
+  btnForgotPassword: document.getElementById('btn-forgot-password'),
 
   // Register Form
   registerForm: document.getElementById('register-form'),
@@ -332,7 +334,7 @@ function setupAuthEventListeners() {
       submitBtn.innerHTML = 'جاري إنشاء وتجهيز الصالون... ⏳';
 
       try {
-        await signUpNewSalon({
+        const res = await signUpNewSalon({
           email,
           password,
           salonName,
@@ -341,18 +343,75 @@ function setupAuthEventListeners() {
           barberNames
         });
 
-        showToast('تم إنشاء صالونك بنجاح! أهلاً بك في منصة مِقَصْ 💈✨', 'success');
+        if (res.isExistingLogin) {
+          showToast(`أهلاً بك مجدداً في ${res.salon?.salon_name || 'صالونك'}! تم تسجيل الدخول بنجاح 💈`, 'success');
+        } else {
+          showToast('تم إنشاء صالونك بنجاح! أهلاً بك في منصة مِقَصْ 💈✨', 'success');
+        }
         await bootDashboard();
       } catch (err) {
-        showToast(err.message, 'error');
-        if (DOM.registerErrorAlert && DOM.registerErrorText) {
-          DOM.registerErrorText.textContent = err.message || 'تعذر إنشاء الحساب، يرجى المحاولة مجدداً.';
-          DOM.registerErrorAlert.style.display = 'flex';
+        if (err.code === 'EMAIL_ALREADY_EXISTS') {
+          // Seamless frictionless transition to Login tab
+          if (DOM.tabAuthLogin) DOM.tabAuthLogin.click();
+          if (DOM.loginEmail) DOM.loginEmail.value = email;
+          if (DOM.loginPassword) {
+            DOM.loginPassword.value = '';
+            DOM.loginPassword.focus();
+          }
+          showToast('هذا البريد مسجل مسبقاً، تفضل بتسجيل الدخول 🔑', 'info');
+          if (DOM.loginErrorAlert && DOM.loginErrorText) {
+            DOM.loginErrorText.textContent = 'هذا الحساب موجود بالفعل، يرجى كتابة كلمة المرور الخاصة به للدخول.';
+            DOM.loginErrorAlert.className = 'login-alert-info';
+            DOM.loginErrorAlert.style.display = 'flex';
+          }
+        } else {
+          showToast(err.message, 'error');
+          if (DOM.registerErrorAlert && DOM.registerErrorText) {
+            DOM.registerErrorText.textContent = err.message || 'تعذر إنشاء الحساب، يرجى المحاولة مجدداً.';
+            DOM.registerErrorAlert.className = 'login-alert-error';
+            DOM.registerErrorAlert.style.display = 'flex';
+          }
+          triggerShake();
         }
-        triggerShake();
       } finally {
         submitBtn.disabled = false;
         submitBtn.innerHTML = originalText;
+      }
+    });
+  }
+
+  // 3. FORGOT PASSWORD HANDLER
+  if (DOM.btnForgotPassword) {
+    DOM.btnForgotPassword.addEventListener('click', async () => {
+      const email = DOM.loginEmail.value.trim();
+      if (!email) {
+        showToast('يرجى إدخال بريدك الإلكتروني أولاً في خانة البريد.', 'info');
+        DOM.loginEmail.focus();
+        DOM.loginEmail.classList.add('input-error');
+        return;
+      }
+
+      if (!confirm(`هل تريد إرسال رابط استعادة كلمة المرور إلى البريد الإلكتروني التالي:\n${email}؟`)) {
+        return;
+      }
+
+      const origText = DOM.btnForgotPassword.textContent;
+      DOM.btnForgotPassword.disabled = true;
+      DOM.btnForgotPassword.textContent = 'جاري الإرسال...';
+
+      try {
+        await resetBarberPassword(email);
+        showToast('تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني! 📧', 'success');
+        if (DOM.loginErrorAlert && DOM.loginErrorText) {
+          DOM.loginErrorText.textContent = 'تم إرسال رابط الاستعادة إلى بريدك، يرجى تفقد صندوق الوارد أو البريد المزعج.';
+          DOM.loginErrorAlert.className = 'login-alert-info';
+          DOM.loginErrorAlert.style.display = 'flex';
+        }
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        DOM.btnForgotPassword.disabled = false;
+        DOM.btnForgotPassword.textContent = origText;
       }
     });
   }

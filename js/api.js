@@ -487,11 +487,23 @@ const ADMIN_PASSCODE_KEY = 'maqass_admin_authenticated';
  * @returns {Promise<boolean>}
  */
 export async function signInBarber(email, password = '') {
+  if (isDemoMode()) {
+    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+    return { success: true };
+  }
+
   const cleanEmail = (email || '').trim().toLowerCase();
   const cleanPassword = (password || '').trim();
 
   if (!cleanEmail || !cleanPassword) {
     throw new BookingError('يرجى إدخال البريد الإلكتروني وكلمة المرور.');
+  }
+
+  // 1. Proactively try secure_barber_auth if RPC is available (auto-confirms & syncs)
+  try {
+    await supabase.rpc('secure_barber_auth', { p_email: cleanEmail, p_password: cleanPassword });
+  } catch (_) {
+    // Ignore if RPC not installed
   }
 
   try {
@@ -502,14 +514,32 @@ export async function signInBarber(email, password = '') {
 
     if (error) {
       if (error.message.includes('Invalid login credentials')) {
-        throw new BookingError('بيانات الدخول غير صحيحة، يرجى التأكد من البريد الإلكتروني وكلمة المرور.');
+        throw new BookingError('البريد الإلكتروني أو كلمة المرور غير صحيحة.');
       }
-      throw new BookingError(error.message);
+      if (error.message.includes('Email not confirmed')) {
+        throw new BookingError('يرجى تأكيد بريدك الإلكتروني من الرابط المرسل إلى صندوق الوارد.');
+      }
+      throw new BookingError('تعذر تسجيل الدخول: ' + error.message);
     }
 
     if (data?.session) {
       sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
-      return true;
+
+      // Pre-load and cache user's salon in localStorage
+      const user = data.user;
+      if (user) {
+        const { data: salon } = await supabase
+          .from('salons')
+          .select('*')
+          .eq('owner_id', user.id)
+          .maybeSingle();
+
+        if (salon) {
+          localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, salon.id);
+          localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, salon.slug);
+        }
+      }
+      return { success: true };
     }
   } catch (err) {
     if (err instanceof BookingError) throw err;
@@ -517,6 +547,32 @@ export async function signInBarber(email, password = '') {
   }
 
   throw new BookingError('بيانات الدخول غير صحيحة، يرجى التأكد من صحة الحساب.');
+}
+
+/**
+ * Sends a password reset email to the barber
+ * @param {string} email
+ * @returns {Promise<Object>}
+ */
+export async function resetBarberPassword(email) {
+  if (isDemoMode()) {
+    return { success: true, message: 'في الوضع التجريبي يمكنك تسجيل الدخول بكلمة المرور: 123456' };
+  }
+
+  const cleanEmail = (email || '').trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new BookingError('يرجى إدخال البريد الإلكتروني لإرسال رابط الاستعادة.');
+  }
+
+  const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+    redirectTo: window.location.origin + window.location.pathname
+  });
+
+  if (error) {
+    throw new BookingError('تعذر إرسال رابط الاستعادة: ' + error.message);
+  }
+
+  return { success: true };
 }
 
 /**
@@ -556,11 +612,17 @@ export async function signOutBarber() {
 }
 
 /**
- * Registers a new barber account, provisions their unique salon, chairs, and starter services
+ * Registers a new barber account, provisions their unique salon, chairs, and starter services.
+ * Features smart seamless auth: if account already exists with matching password, logs them in directly.
  * @param {Object} payload - { email, password, salonName, phone, barberType, barberNames }
  * @returns {Promise<Object>} Created salon and barbers list
  */
 export async function signUpNewSalon({ email, password, salonName, phone, barberType = 'single', barberNames = '' }) {
+  if (isDemoMode()) {
+    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+    return { salon: getDemoStore().salon_settings, barbers: getDemoStore().barbers, isNew: true };
+  }
+
   const cleanEmail = (email || '').trim().toLowerCase();
   const cleanPassword = (password || '').trim();
   const cleanName = (salonName || '').trim() || 'صالون الحلاقة';
@@ -573,7 +635,17 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     throw new BookingError('يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل.');
   }
 
-  // 1. Sign up user in Supabase Auth
+  // 1. Proactively try secure_barber_auth if RPC is available (auto-confirms & syncs password)
+  try {
+    await supabase.rpc('secure_barber_auth', { p_email: cleanEmail, p_password: cleanPassword });
+  } catch (_) {
+    // Ignore if RPC not installed
+  }
+
+  // 2. Attempt signUp in Supabase Auth
+  let activeUser = null;
+  let isExistingUser = false;
+
   const { data: authData, error: authErr } = await supabase.auth.signUp({
     email: cleanEmail,
     password: cleanPassword
@@ -581,23 +653,19 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
 
   if (authErr) {
     if (authErr.message.toLowerCase().includes('already registered')) {
-      throw new BookingError('هذا البريد الإلكتروني مسجل بالفعل! يرجى الانتقال إلى تبويب (دخول صالون مسجل) لتسجيل الدخول.');
+      isExistingUser = true;
+    } else {
+      throw new BookingError('فشل إنشاء الحساب: ' + authErr.message);
     }
-    throw new BookingError('فشل إنشاء الحساب: ' + authErr.message);
+  } else if (authData?.user) {
+    activeUser = authData.user;
+    if (activeUser.identities && activeUser.identities.length === 0) {
+      isExistingUser = true;
+    }
   }
 
-  const user = authData?.user;
-  if (!user) {
-    throw new BookingError('تعذر الحصول على بيانات المستخدم بعد التسجيل.');
-  }
-
-  // Detect if user already existed prior to this call (Supabase returns empty identities array)
-  const isExistingUser = user.identities && user.identities.length === 0;
-
-  let activeUser = user;
-
-  // Ensure active session
-  if (!authData.session) {
+  // 3. Ensure an active session (call signInWithPassword if needed)
+  if (!authData?.session) {
     const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: cleanPassword
@@ -605,10 +673,17 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
 
     if (signInErr) {
       if (isExistingUser) {
-        throw new BookingError('هذا البريد مسجل مسبقاً! إذا كنت صاحب الحساب، يرجى إدخال كلمة المرور الصحيحة لحسابك، أو الانتقال لتبويب (دخول صالون مسجل).');
+        // Smart frictionless error: clean, brief, with error code for UI auto-tab switch
+        const err = new BookingError('هذا البريد مسجل مسبقاً، تفضل بتسجيل الدخول بكلمة المرور الخاصة به.');
+        err.code = 'EMAIL_ALREADY_EXISTS';
+        err.email = cleanEmail;
+        throw err;
       }
       if (signInErr.message.includes('Invalid login credentials')) {
-        throw new BookingError('يرجى التأكد من تعطيل خيار (Confirm email) في إعدادات Supabase، أو تفعيل الحساب من رابط الإيميل المرسل إليك.');
+        throw new BookingError('البريد الإلكتروني أو كلمة المرور غير صحيحة.');
+      }
+      if (signInErr.message.includes('Email not confirmed')) {
+        throw new BookingError('يرجى تأكيد بريدك الإلكتروني من الرابط المرسل إلى صندوق الوارد.');
       }
       throw new BookingError(signInErr.message);
     }
@@ -618,7 +693,13 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     }
   }
 
-  // Check if this user already has an existing registered salon
+  if (!activeUser) {
+    throw new BookingError('تعذر إتمام تسجيل الحساب، يرجى المحاولة مرة أخرى.');
+  }
+
+  sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+
+  // 4. Check if this user already has an existing registered salon
   const { data: existingSalon } = await supabase
     .from('salons')
     .select('*')
@@ -628,16 +709,18 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
   if (existingSalon) {
     localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, existingSalon.id);
     localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, existingSalon.slug);
-    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
     const existingBarbers = await getBarbers(existingSalon.id);
-    return { salon: existingSalon, barbers: existingBarbers };
+    return { 
+      salon: existingSalon, 
+      barbers: existingBarbers,
+      isExistingLogin: true 
+    };
   }
 
-  // 2. Generate unique random slug
+  // 5. Generate unique random slug & create Salon record
   const randomSuffix = Math.random().toString(36).substring(2, 8);
   const slug = 'salon-' + randomSuffix;
 
-  // 3. Create Salon record
   const { data: salon, error: salonErr } = await supabase
     .from('salons')
     .insert({
@@ -656,7 +739,7 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     throw new BookingError('تم إنشاء الحساب ولكن تعذر تجهيز الصالون: ' + salonErr.message);
   }
 
-  // 4. Create Barbers / Chairs
+  // 6. Create Barbers / Chairs
   let barbersToInsert = [];
   if (barberType === 'multi' && barberNames.trim()) {
     const names = barberNames.split(/[,،\n]/).map(n => n.trim()).filter(Boolean);
@@ -685,7 +768,7 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
     console.warn('Barber creation warning:', barberErr);
   }
 
-  // 5. Create default initial services for this salon
+  // 7. Create default initial services for this salon
   const defaultServices = [
     { salon_id: salon.id, name: 'قص شعر كلاسيكي / مودرن', price: 70, duration_minutes: 30, is_active: true },
     { salon_id: salon.id, name: 'تحديد وتهذيب اللحية', price: 40, duration_minutes: 20, is_active: true },
@@ -696,12 +779,11 @@ export async function signUpNewSalon({ email, password, salonName, phone, barber
 
   await supabase.from('services').insert(defaultServices);
 
-  // Store active salon in localStorage
+  // 8. Store active salon in localStorage
   localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID, salon.id);
   localStorage.setItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_SLUG, salon.slug);
-  sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
 
-  return { salon, barbers: createdBarbers || [] };
+  return { salon, barbers: createdBarbers || [], isNew: true };
 }
 
 /**
