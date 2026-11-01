@@ -357,46 +357,49 @@ export async function createAppointment(payload) {
 }
 
 // =============================================================================
-// 2. BARBER AUTHENTICATION & ACCESS CONTROL (SUPABASE AUTH HARDENED)
+// 2. BARBER AUTHENTICATION & ACCESS CONTROL (SECURE AUTH HARDENED)
 // =============================================================================
 
 const ADMIN_PASSCODE_KEY = 'maqass_admin_authenticated';
 
 /**
- * Signs in the barber via Supabase Auth (email/password) or Admin PIN fallback
+ * Signs in the barber/owner securely via authenticated credentials
  * Attaches valid JWT token to supabase client so hardened RLS policies pass
- * @param {string} emailOrPin
- * @param {string} [password]
+ * @param {string} email
+ * @param {string} password
  * @returns {Promise<boolean>}
  */
-export async function signInBarber(emailOrPin, password = '') {
-  const credential = emailOrPin.trim();
+export async function signInBarber(email, password = '') {
+  const cleanEmail = (email || '').trim();
+  const cleanPassword = (password || '').trim();
 
-  // 1. Supabase Auth Email/Password Login (Recommended for strict RLS)
-  if (credential.includes('@') && password) {
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: credential,
-        password: password.trim()
-      });
+  if (!cleanEmail || !cleanPassword) {
+    throw new BookingError('يرجى إدخال البريد الإلكتروني وكلمة المرور.');
+  }
 
-      if (!error && data?.session) {
-        sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
-        return true;
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password: cleanPassword
+    });
+
+    if (error) {
+      if (error.message.includes('Invalid login credentials')) {
+        throw new BookingError('بيانات الدخول غير صحيحة، يرجى التأكد من البريد الإلكتروني وكلمة المرور.');
       }
-    } catch (err) {
-      console.warn('Supabase auth attempt error:', err);
+      throw new BookingError(error.message);
     }
+
+    if (data?.session) {
+      sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
+      return true;
+    }
+  } catch (err) {
+    if (err instanceof BookingError) throw err;
+    throw new BookingError('تعذر تسجيل الدخول، يرجى المحاولة مرة أخرى.');
   }
 
-  // 2. Admin PIN Check (Default master PIN: 123456)
-  const savedPin = localStorage.getItem('MAQASS_ADMIN_PIN') || '123456';
-  if (credential === savedPin || password.trim() === savedPin || credential === '123456') {
-    sessionStorage.setItem(ADMIN_PASSCODE_KEY, 'true');
-    return true;
-  }
-
-  throw new BookingError('بيانات الدخول غير صحيحة. الرقم السري الافتراضي للتجربة هو 123456');
+  throw new BookingError('بيانات الدخول غير صحيحة، يرجى التأكد من صحة الحساب.');
 }
 
 /**
@@ -404,9 +407,6 @@ export async function signInBarber(emailOrPin, password = '') {
  * @returns {Promise<boolean>}
  */
 export async function getBarberSession() {
-  if (sessionStorage.getItem(ADMIN_PASSCODE_KEY) === 'true') {
-    return true;
-  }
   try {
     const { data } = await supabase.auth.getSession();
     if (data?.session) {
@@ -416,6 +416,7 @@ export async function getBarberSession() {
   } catch {
     // Ignore session check error
   }
+  sessionStorage.removeItem(ADMIN_PASSCODE_KEY);
   return false;
 }
 

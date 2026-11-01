@@ -152,25 +152,33 @@ async function bootDashboard() {
 }
 
 /**
- * Authentication Form Listeners (Supabase Auth Email/Password + PIN)
+ * Authentication Form Listeners (Email & Password Login)
  */
 function setupAuthEventListeners() {
   DOM.loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const credential = DOM.loginEmail.value.trim();
+    const email = DOM.loginEmail.value.trim();
     const password = DOM.loginPassword ? DOM.loginPassword.value : '';
 
-    if (!credential) {
-      showToast('يرجى إدخال البريد الإلكتروني أو الرقم السري.', 'error');
+    if (!email || !password) {
+      showToast('يرجى إدخال البريد الإلكتروني وكلمة المرور.', 'error');
       return;
     }
 
+    const submitBtn = document.getElementById('btn-login-submit');
+    const originalText = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = 'جاري التحقق... ⏳';
+
     try {
-      await signInBarber(credential, password);
-      showToast('تم تسجيل الدخول بنجاح! أهلاً بك يا كابتن ✂️', 'success');
+      await signInBarber(email, password);
+      showToast('تم تسجيل الدخول بنجاح! أهلاً بك يا فنان ✂️', 'success');
       await bootDashboard();
     } catch (err) {
       showToast(err.message, 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
     }
   });
 
