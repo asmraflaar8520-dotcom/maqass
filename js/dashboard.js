@@ -152,16 +152,43 @@ async function bootDashboard() {
 }
 
 /**
- * Authentication Form Listeners (Email & Password Login)
+ * Authentication Form Listeners (Email & Password Login with Tactile Alerts)
  */
 function setupAuthEventListeners() {
+  const errorAlert = document.getElementById('login-error-alert');
+  const errorText = document.getElementById('login-error-text');
+  const modalContent = DOM.loginGate.querySelector('.modal-content');
+
+  // Clear errors when typing
+  DOM.loginEmail.addEventListener('input', () => {
+    DOM.loginEmail.classList.remove('input-error');
+    if (errorAlert) errorAlert.style.display = 'none';
+  });
+  DOM.loginPassword.addEventListener('input', () => {
+    DOM.loginPassword.classList.remove('input-error');
+    if (errorAlert) errorAlert.style.display = 'none';
+  });
+
   DOM.loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = DOM.loginEmail.value.trim();
     const password = DOM.loginPassword ? DOM.loginPassword.value : '';
 
+    // Clear previous errors
+    if (errorAlert) errorAlert.style.display = 'none';
+    DOM.loginEmail.classList.remove('input-error');
+    DOM.loginPassword.classList.remove('input-error');
+
     if (!email || !password) {
+      if (!email) DOM.loginEmail.classList.add('input-error');
+      if (!password) DOM.loginPassword.classList.add('input-error');
+      
+      if (errorAlert && errorText) {
+        errorText.textContent = 'يرجى إدخال البريد الإلكتروني وكلمة المرور.';
+        errorAlert.style.display = 'flex';
+      }
       showToast('يرجى إدخال البريد الإلكتروني وكلمة المرور.', 'error');
+      triggerShake();
       return;
     }
 
@@ -175,12 +202,35 @@ function setupAuthEventListeners() {
       showToast('تم تسجيل الدخول بنجاح! أهلاً بك يا فنان ✂️', 'success');
       await bootDashboard();
     } catch (err) {
+      // 1. Show Toast Alert
       showToast(err.message, 'error');
+
+      // 2. Display In-Form Error Alert Box
+      if (errorAlert && errorText) {
+        errorText.textContent = err.message || 'بيانات الدخول غير صحيحة، يرجى المحاولة مرة أخرى.';
+        errorAlert.style.display = 'flex';
+      }
+
+      // 3. Highlight inputs with red border
+      DOM.loginEmail.classList.add('input-error');
+      DOM.loginPassword.classList.add('input-error');
+      DOM.loginPassword.focus();
+
+      // 4. Physical Shake Animation
+      triggerShake();
     } finally {
       submitBtn.disabled = false;
       submitBtn.innerHTML = originalText;
     }
   });
+
+  function triggerShake() {
+    if (modalContent) {
+      modalContent.classList.remove('shake-error');
+      void modalContent.offsetWidth; // Force reflow
+      modalContent.classList.add('shake-error');
+    }
+  }
 
   DOM.btnLogout.addEventListener('click', async () => {
     if (confirm('هل تريد بالتأكيد تسجيل الخروج من لوحة التحكم؟')) {
