@@ -41,3 +41,4 @@ jobs:
             echo "::warning title=Keep-Alive Non-200::Received HTTP status ${HTTP_CODE}"
             echo "[STATUS] WARNING: Supabase returned unexpected response code ${HTTP_CODE}."
           fi
+
