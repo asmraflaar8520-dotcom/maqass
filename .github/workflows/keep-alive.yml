@@ -21,9 +21,9 @@ jobs:
           echo " Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')                "
           echo "=========================================================="
           
-          # Ping the lightweight REST health endpoint using public anon key
+          # Ping the lightweight REST endpoint using public anon key
           RESPONSE=$(curl -s -w "\n%{http_code}\n%{time_total}" -X GET \
-            "${SUPABASE_URL}/rest/v1/" \
+            "${SUPABASE_URL}/rest/v1/salons?select=id&limit=1" \
             -H "apikey: ${SUPABASE_ANON_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
           
