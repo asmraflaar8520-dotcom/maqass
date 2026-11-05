@@ -637,8 +637,18 @@ export async function resetBarberPassword(email) {
     throw new BookingError('يرجى إدخال البريد الإلكتروني لإرسال رابط الاستعادة.');
   }
 
+  // Ensure redirect URL explicitly targets dashboard.html cleanly
+  let targetOrigin = window.location.origin;
+  let targetPath = window.location.pathname;
+  if (targetPath.endsWith('index.html')) {
+    targetPath = targetPath.replace(/index\.html$/, 'dashboard.html');
+  } else if (!targetPath.endsWith('dashboard.html')) {
+    targetPath = (targetPath.replace(/\/+$/, '') + '/dashboard.html').replace(/\/+/g, '/');
+  }
+  const redirectTarget = `${targetOrigin}${targetPath}`;
+
   const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-    redirectTo: window.location.origin + window.location.pathname
+    redirectTo: redirectTarget
   });
 
   if (error) {

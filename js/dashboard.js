@@ -159,16 +159,20 @@ const DOM = {
 document.addEventListener('DOMContentLoaded', async () => {
   setupAuthEventListeners();
 
-  // 1. Password Recovery listener via Supabase event or URL hash
-  const hasRecoveryHash = window.location.hash.includes('type=recovery');
+  // 1. Password Recovery listener via Supabase event or URL hash/query
+  const isRecoveryFlow = window.location.hash.includes('type=recovery') || 
+                         window.location.search.includes('type=recovery');
+
+  let activeRecovery = isRecoveryFlow;
 
   supabase.auth.onAuthStateChange((event) => {
     if (event === 'PASSWORD_RECOVERY') {
+      activeRecovery = true;
       openRecoveryModal();
     }
   });
 
-  if (hasRecoveryHash) {
+  if (isRecoveryFlow) {
     openRecoveryModal();
     return;
   }
@@ -180,7 +184,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  await bootDashboard();
+  if (!activeRecovery) {
+    await bootDashboard();
+  }
 });
 
 /**
