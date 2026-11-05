@@ -1,0 +1,43 @@
+name: Supabase Keep-Alive Health Ping
+
+on:
+  schedule:
+    # Run every 4 days at 04:00 UTC to prevent Supabase Free Tier auto-pause
+    - cron: '0 4 */4 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Supabase Health Ping
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API & Log Health Status
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://gifeydqrizdhchpxyhvi.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'sb_publishable_UCFRtyp6_HUTC7650TztpQ_bjOX4Uhi' }}
+        run: |
+          echo "=========================================================="
+          echo " [KEEP-ALIVE] Initiating Supabase Scheduled Health Check  "
+          echo " Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')                "
+          echo "=========================================================="
+          
+          # Ping the lightweight REST health endpoint using public anon key
+          RESPONSE=$(curl -s -w "\n%{http_code}\n%{time_total}" -X GET \
+            "${SUPABASE_URL}/rest/v1/" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+          
+          BODY=$(echo "$RESPONSE" | sed '$!d')
+          TOTAL_TIME=$(echo "$RESPONSE" | tail -n 1)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n 2 | head -n 1)
+          
+          echo "[LOG] HTTP Status Code: ${HTTP_CODE}"
+          echo "[LOG] Response Time: ${TOTAL_TIME}s"
+          
+          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 400 ]; then
+            echo "::notice title=Keep-Alive Success::Supabase ping verified with status ${HTTP_CODE} in ${TOTAL_TIME}s"
+            echo "[STATUS] OK: Supabase project is active and refreshed."
+          else
+            echo "::warning title=Keep-Alive Non-200::Received HTTP status ${HTTP_CODE}"
+            echo "[STATUS] WARNING: Supabase returned unexpected response code ${HTTP_CODE}."
+          fi
