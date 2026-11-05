@@ -1,5 +1,29 @@
+# Secrets & Environment variables
+.env
+.env.*
+*.env
+
+# Certificates and private keys
+*.pem
+*.key
+*.cert
+*.crt
+id_rsa
+id_ecdsa
+id_ed25519
+
+# Database dumps, backups & logs
+*.dump
+*.sql.bak
+*.backup
+*.bak
+*.tar.gz
+*.zip
+*.log
+
+# System & Editor files
 .DS_Store
 Thumbs.db
-*.log
 .vscode/
 .idea/
+node_modules/

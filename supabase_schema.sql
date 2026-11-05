@@ -233,14 +233,14 @@ DROP POLICY IF EXISTS "Authenticated can create salon" ON salons;
 CREATE POLICY "Authenticated can create salon" 
   ON salons FOR INSERT 
   TO authenticated 
-  WITH CHECK (owner_id = auth.uid() OR owner_id IS NULL);
+  WITH CHECK (owner_id = auth.uid());
 
 DROP POLICY IF EXISTS "Owner can manage own salon" ON salons;
 CREATE POLICY "Owner can manage own salon" 
   ON salons FOR ALL 
   TO authenticated 
-  USING (owner_id = auth.uid() OR owner_id IS NULL) 
-  WITH CHECK (owner_id = auth.uid() OR owner_id IS NULL);
+  USING (owner_id = auth.uid()) 
+  WITH CHECK (owner_id = auth.uid());
 
 -- ---- BARBERS POLICIES ----
 DROP POLICY IF EXISTS "Public can view active barbers" ON barbers;
@@ -253,10 +253,10 @@ CREATE POLICY "Owner can manage barbers"
   ON barbers FOR ALL 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   ) 
   WITH CHECK (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 -- ---- SERVICES POLICIES ----
@@ -270,10 +270,10 @@ CREATE POLICY "Owner can manage services"
   ON services FOR ALL 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   ) 
   WITH CHECK (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 -- ---- APPOINTMENTS POLICIES (Privacy Hardened — Zero PII Leakage) ----
@@ -285,7 +285,7 @@ CREATE POLICY "Owner can view appointments"
   ON appointments FOR SELECT 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 DROP POLICY IF EXISTS "Public can book pending appointments" ON appointments;
@@ -301,10 +301,10 @@ CREATE POLICY "Owner can update appointments"
   ON appointments FOR UPDATE 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   ) 
   WITH CHECK (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 DROP POLICY IF EXISTS "Owner can delete appointments" ON appointments;
@@ -312,7 +312,7 @@ CREATE POLICY "Owner can delete appointments"
   ON appointments FOR DELETE 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL) OR salon_id IS NULL
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 -- Secure privacy-preserving RPC: Public can calculate occupied slots WITHOUT ever reading client names or phones
@@ -340,7 +340,7 @@ CREATE POLICY "Owner can view blacklist"
   ON blacklist FOR SELECT 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 DROP POLICY IF EXISTS "Owner can manage blacklist" ON blacklist;
@@ -348,10 +348,10 @@ CREATE POLICY "Owner can manage blacklist"
   ON blacklist FOR ALL 
   TO authenticated 
   USING (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   ) 
   WITH CHECK (
-    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid() OR owner_id IS NULL)
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 -- Enforce unique phone per salon
