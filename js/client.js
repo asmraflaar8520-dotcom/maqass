@@ -249,16 +249,9 @@ function renderSalonProfileDOM(settings) {
  * Enforces strict multi-tenancy: clients only see the specific salon they visited
  */
 async function loadSalonProfile() {
-  // 1. If NO salon slug was specified in URL: show Platform Gateway
+  // 1. If NO salon slug was specified in URL: redirect directly to Dashboard/Login
   if (!state.salonSlug) {
-    if (DOM.platformGateway) DOM.platformGateway.style.display = 'block';
-    if (DOM.bookingContainer) DOM.bookingContainer.style.display = 'none';
-    if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'none';
-    if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
-    if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'none';
-    if (DOM.salonName) DOM.salonName.textContent = 'منصة مِقَصْ';
-    if (DOM.salonStatus) DOM.salonStatus.textContent = 'منظومة حجز صالونات الحلاقة 💈';
-    initGatewayLookup();
+    window.location.replace('dashboard.html');
     return;
   }
 
@@ -276,13 +269,10 @@ async function loadSalonProfile() {
     const settings = await getSalonSettings(state.salonSlug);
 
     if (!settings) {
-      // Salon not found by that slug!
-      if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'block';
-      if (DOM.bookingContainer) DOM.bookingContainer.style.display = 'none';
-      if (DOM.platformGateway) DOM.platformGateway.style.display = 'none';
-      if (DOM.pauseBanner) DOM.pauseBanner.style.display = 'none';
-      if (DOM.suspendedBanner) DOM.suspendedBanner.style.display = 'none';
-      if (DOM.salonName) DOM.salonName.textContent = 'صالون غير مسجل';
+      // Salon not found by that slug: seamlessly redirect to Dashboard/Login
+      window.location.replace('dashboard.html');
+      return;
+    }
       if (DOM.salonStatus) DOM.salonStatus.textContent = 'الرابط غير صحيح أو منتهي ⚠️';
       return;
     }

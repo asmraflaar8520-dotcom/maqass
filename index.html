@@ -13,6 +13,16 @@
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="manifest" href="manifest.json">
 
+  <!-- Immediate Mobile & Web Gateway: Route root visitors directly to Dashboard Login -->
+  <script>
+    (function() {
+      var p = new URLSearchParams(window.location.search);
+      if (!p.has('s') && !p.has('salon')) {
+        window.location.replace('dashboard.html');
+      }
+    })();
+  </script>
+
   <!-- Optimized Font Loading & Stylesheet -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
