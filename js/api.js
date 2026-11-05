@@ -652,7 +652,10 @@ export async function resetBarberPassword(email) {
   });
 
   if (error) {
-    throw new BookingError('تعذر إرسال رابط الاستعادة: ' + error.message);
+    if (error.message?.includes('rate limit') || error.message?.includes('over_email_send_rate_limit')) {
+      throw new BookingError('تم إرسال عدة رسائل مؤخراً، يرجى مراجعة بريدك الآن (الرابط المرسل مسبقاً صالح للاستخدام) أو الانتظار بضع دقائق.');
+    }
+    throw new BookingError('تعذر إرسال رابط الاستعادة: ' + (error.message || 'خطأ غير متوقع'));
   }
 
   return { success: true };
