@@ -486,7 +486,12 @@ export async function createAppointment(payload) {
     }
   }
 
+  const generatedId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+    ? crypto.randomUUID() 
+    : '00000000-0000-4000-8000-' + Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+
   const insertData = {
+    id: generatedId,
     salon_id: payload.salon_id || null,
     barber_id: (payload.barber_id && payload.barber_id !== 'any') ? payload.barber_id : null,
     service_id: payload.service_id,
@@ -500,25 +505,10 @@ export async function createAppointment(payload) {
   };
 
   try {
-    const { data, error } = await supabase
+    // Perform minimal insert without .select() to preserve strict RLS zero-PII security
+    const { error } = await supabase
       .from('appointments')
-      .insert(insertData)
-      .select(`
-        id, 
-        salon_id,
-        barber_id,
-        appointment_date, 
-        start_time, 
-        end_time, 
-        status, 
-        client_name, 
-        client_phone, 
-        service_id, 
-        created_at,
-        services ( name, duration_minutes, price ),
-        barbers ( name )
-      `)
-      .single();
+      .insert(insertData);
 
     if (error) {
       if (
@@ -545,7 +535,18 @@ export async function createAppointment(payload) {
       throw new BookingError(translateDatabaseError(error), error.code);
     }
 
-    return data;
+    return {
+      id: generatedId,
+      ...insertData,
+      services: {
+        name: payload.service_name || 'خدمة حلاقة',
+        duration_minutes: payload.duration_minutes || 30,
+        price: payload.price || 0
+      },
+      barbers: {
+        name: payload.barber_name || 'الكرسي الرئيسي'
+      }
+    };
   } catch (err) {
     if (err instanceof BookingError) throw err;
     throw new BookingError(translateDatabaseError(err));
