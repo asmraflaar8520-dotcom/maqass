@@ -515,6 +515,53 @@ AFTER INSERT ON salons
 FOR EACH ROW
 EXECUTE FUNCTION public.auto_provision_primary_barber();
 
+-- 11.4 INSTANT SECURE PASSWORD RESET FOR SALON OWNERS (Zero Email Rate Limit Dependency)
+-- Allows a verified salon owner to reset their password using their registered salon phone number
+CREATE OR REPLACE FUNCTION public.reset_salon_password_direct(
+  p_email TEXT,
+  p_phone TEXT,
+  p_new_password TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+  v_user_id UUID;
+  v_clean_phone TEXT;
+BEGIN
+  IF p_email IS NULL OR p_phone IS NULL OR p_new_password IS NULL OR length(trim(p_new_password)) < 6 THEN
+    RETURN jsonb_build_object('success', false, 'message', 'يرجى إدخال البريد ورقم الهاتف وكلمة مرور لا تقل عن 6 أحرف.');
+  END IF;
+
+  v_clean_phone := regexp_replace(regexp_replace(p_phone, '\s+', '', 'g'), '^(\+20|0020)', '0');
+
+  -- Find owner user_id where salon phone matches
+  SELECT u.id INTO v_user_id
+  FROM auth.users u
+  JOIN salons s ON s.owner_id = u.id
+  WHERE lower(trim(u.email)) = lower(trim(p_email))
+    AND regexp_replace(regexp_replace(s.phone, '\s+', '', 'g'), '^(\+20|0020)', '0') = v_clean_phone
+  LIMIT 1;
+
+  IF v_user_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'message', 'بيانات التحقق غير صحيحة، يرجى التأكد من البريد الإلكتروني ورقم هاتف الصالون المسجل.');
+  END IF;
+
+  -- Update encrypted_password directly in auth.users
+  UPDATE auth.users
+  SET encrypted_password = crypt(p_new_password, gen_salt('bf')),
+      email_confirmed_at = COALESCE(email_confirmed_at, now()),
+      updated_at = now()
+  WHERE id = v_user_id;
+
+  RETURN jsonb_build_object('success', true, 'message', 'تم تحديث كلمة المرور بنجاح! يمكنك الآن تسجيل الدخول مباشرة 🚀');
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.reset_salon_password_direct(TEXT, TEXT, TEXT) TO anon, authenticated;
+
 -- =============================================================================
 -- 12. SUPER ADMIN OWNER OVERVIEW & CONTROL (Lock & Oversee Salons)
 -- =============================================================================

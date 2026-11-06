@@ -662,6 +662,48 @@ export async function resetBarberPassword(email) {
 }
 
 /**
+ * Instant phone-verified password reset for salon owners (Bypasses email rate limits)
+ * @param {string} email
+ * @param {string} phone
+ * @param {string} newPassword
+ * @returns {Promise<Object>}
+ */
+export async function resetSalonPasswordDirect(email, phone, newPassword) {
+  if (isDemoMode()) {
+    return { success: true, message: 'تم تحديث كلمة المرور بنجاح في الوضع التجريبي!' };
+  }
+
+  const cleanEmail = (email || '').trim().toLowerCase();
+  const cleanPhone = (phone || '').trim();
+  const cleanPassword = (newPassword || '').trim();
+
+  if (!cleanEmail || !cleanPhone || !cleanPassword) {
+    throw new BookingError('يرجى إدخال البريد ورقم الهاتف وكلمة المرور الجديدة.');
+  }
+
+  if (cleanPassword.length < 6) {
+    throw new BookingError('كلمة المرور يجب ألا تقل عن 6 أحرف أو أرقام.');
+  }
+
+  const { data, error } = await supabase.rpc('reset_salon_password_direct', {
+    p_email: cleanEmail,
+    p_phone: cleanPhone,
+    p_new_password: cleanPassword
+  });
+
+  if (error) {
+    console.error('Direct reset error:', error);
+    throw new BookingError('تعذر تحديث كلمة المرور: ' + error.message);
+  }
+
+  if (!data?.success) {
+    throw new BookingError(data?.message || 'بيانات التحقق غير صحيحة.');
+  }
+
+  return data;
+}
+
+/**
  * Updates user password during password recovery or settings change
  * @param {string} newPassword
  * @returns {Promise<Object>}
