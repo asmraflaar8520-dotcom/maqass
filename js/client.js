@@ -126,8 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Instant parallel data fetching & background non-blocking counter
   initVisitorCounter(); // Non-blocking
-  loadSalonProfile();   // Instant cache render + background network refresh
-  loadServices();       // Instant cache render + background network refresh
+  loadSalonProfile();   // Master profile & services loader (Instant cache + network refresh)
 });
 
 /**
@@ -257,11 +256,22 @@ async function loadSalonProfile() {
 
   // 2. Slug was provided: strictly fetch that salon
   const cacheKey = `maqass_cached_salon_${state.salonSlug}`;
+  let hasCached = false;
 
   // Instant cache render
   try {
     const cached = localStorage.getItem(cacheKey);
-    if (cached) renderSalonProfileDOM(JSON.parse(cached));
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      renderSalonProfileDOM(parsed);
+      hasCached = true;
+      if (parsed.id) {
+        const cachedServices = localStorage.getItem(`maqass_cached_services_${parsed.id}`);
+        if (cachedServices) {
+          renderServicesDOM(JSON.parse(cachedServices));
+        }
+      }
+    }
   } catch {}
 
   // Fresh fetch from network
@@ -270,10 +280,8 @@ async function loadSalonProfile() {
 
     if (!settings) {
       // Salon not found by that slug: seamlessly redirect to Dashboard/Login
-      window.location.replace('dashboard.html');
-      return;
-    }
       if (DOM.salonStatus) DOM.salonStatus.textContent = 'الرابط غير صحيح أو منتهي ⚠️';
+      window.location.replace('dashboard.html');
       return;
     }
 
@@ -283,14 +291,36 @@ async function loadSalonProfile() {
     localStorage.setItem(cacheKey, JSON.stringify(settings));
     renderSalonProfileDOM(settings);
 
-    // Fetch active barbers and active services for this specific salon
+    // Fetch active barbers and active services for this specific salon in parallel
     if (settings && settings.id && !settings.is_suspended) {
-      const barbers = await getBarbers(settings.id);
-      state.barbers = barbers;
-      renderBarberPillsDOM(barbers);
+      const [barbers, services] = await Promise.all([
+        getBarbers(settings.id).catch(err => {
+          console.warn('Failed to load barbers:', err);
+          return [];
+        }),
+        getActiveServices(settings.id).catch(err => {
+          console.warn('Failed to load services:', err);
+          return [];
+        })
+      ]);
 
-      const services = await getActiveServices(settings.id);
-      renderServicesDOM(services);
+      state.barbers = barbers || [];
+      renderBarberPillsDOM(state.barbers);
+
+      state.services = services || [];
+      if (services && services.length > 0) {
+        localStorage.setItem(`maqass_cached_services_${settings.id}`, JSON.stringify(services));
+        renderServicesDOM(services);
+      } else {
+        if (DOM.servicesContainer) {
+          DOM.servicesContainer.style.display = 'block';
+          DOM.servicesContainer.innerHTML = `
+            <div class="empty-state" style="grid-column: 1 / -1;">
+              <p>لا توجد خدمات مضافة لهذا الصالون حالياً.</p>
+            </div>
+          `;
+        }
+      }
     }
 
     // Subscribe to live realtime status updates for this salon
@@ -299,6 +329,13 @@ async function loadSalonProfile() {
     }
   } catch (err) {
     console.warn('Could not load salon settings:', err);
+    if (!hasCached && DOM.salonStatus) {
+      DOM.salonStatus.textContent = 'تعذر الاتصال بالخادم ⚠️';
+    }
+  } finally {
+    if (DOM.servicesLoading) {
+      DOM.servicesLoading.style.display = 'none';
+    }
   }
 }
 
@@ -425,10 +462,10 @@ function updateBarberPillsSelection() {
  * Renders services catalog in DOM
  */
 function renderServicesDOM(services) {
+  if (DOM.servicesLoading) DOM.servicesLoading.style.display = 'none';
   if (!Array.isArray(services) || services.length === 0) return;
   state.services = services;
 
-  DOM.servicesLoading.style.display = 'none';
   DOM.servicesContainer.style.display = 'grid';
   DOM.servicesContainer.innerHTML = '';
 
@@ -456,10 +493,17 @@ function renderServicesDOM(services) {
 /**
  * Loads and renders active services catalog (SWR: Instant Cache + Fresh Network)
  */
-async function loadServices() {
+async function loadServices(salonId = null) {
+  const targetSalonId = salonId || state.salonSettings?.id;
+  if (!targetSalonId) {
+    if (DOM.servicesLoading) DOM.servicesLoading.style.display = 'none';
+    return;
+  }
+
   // 1. Instant cache render (0ms delay)
+  const cacheKey = `maqass_cached_services_${targetSalonId}`;
   try {
-    const cached = localStorage.getItem('maqass_cached_services');
+    const cached = localStorage.getItem(cacheKey);
     if (cached) {
       const parsed = JSON.parse(cached);
       if (parsed.length > 0) renderServicesDOM(parsed);
@@ -468,21 +512,20 @@ async function loadServices() {
 
   // 2. Fresh fetch from network
   try {
-    const services = await getActiveServices(state.salonSettings?.id);
-    localStorage.setItem('maqass_cached_services', JSON.stringify(services));
-    renderServicesDOM(services);
+    const services = await getActiveServices(targetSalonId);
+    state.services = services || [];
+    localStorage.setItem(cacheKey, JSON.stringify(state.services));
+    renderServicesDOM(state.services);
 
-    if (services.length === 0) {
-      DOM.servicesLoading.style.display = 'none';
+    if (state.services.length === 0) {
       DOM.servicesContainer.style.display = 'block';
       DOM.servicesContainer.innerHTML = `
         <div class="empty-state" style="grid-column: 1 / -1;">
-          <p>لا توجد خدمات متاحة حالياً.</p>
+          <p>لا توجد خدمات متاحة حالياً بهذا الصالون.</p>
         </div>
       `;
     }
   } catch (err) {
-    DOM.servicesLoading.style.display = 'none';
     if (!state.services || state.services.length === 0) {
       DOM.servicesContainer.style.display = 'block';
       DOM.servicesContainer.innerHTML = `
@@ -490,6 +533,10 @@ async function loadServices() {
           <p style="color: #ef4444;">${err.message}</p>
         </div>
       `;
+    }
+  } finally {
+    if (DOM.servicesLoading) {
+      DOM.servicesLoading.style.display = 'none';
     }
   }
 }

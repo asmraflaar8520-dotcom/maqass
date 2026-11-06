@@ -371,17 +371,21 @@ export async function triggerVisitorCounter() {
 
 /**
  * Lightweight Toast Notification (Pure DOM, zero external dependencies)
+ * Guarantees at most ONE clean toast notification is active at any time.
  * @param {string} message - Text to display
  * @param {'info'|'success'|'error'} type - Style variant
  * @param {number} duration - Milliseconds to stay visible
  */
-export function showToast(message, type = 'info', duration = 3500) {
+export function showToast(message, type = 'info', duration = 3000) {
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
     container.id = 'toast-container';
     container.className = 'toast-container';
     document.body.appendChild(container);
+  } else {
+    // Clear any previous active toasts immediately to prevent vertical stacking/spamming
+    container.innerHTML = '';
   }
 
   const toast = document.createElement('div');
@@ -396,7 +400,7 @@ export function showToast(message, type = 'info', duration = 3500) {
     toast.style.transition = 'all 0.3s ease';
     setTimeout(() => {
       toast.remove();
-      if (container.children.length === 0) {
+      if (container && container.children.length === 0) {
         container.remove();
       }
     }, 300);

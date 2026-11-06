@@ -545,16 +545,6 @@ async function loadSalonHeaderAndSettings() {
         DOM.btnViewClientPage.href = fullClientUrl;
       }
 
-      if (DOM.btnCopySalonLink) {
-        DOM.btnCopySalonLink.onclick = () => {
-          navigator.clipboard.writeText(fullClientUrl).then(() => {
-            showToast('تم نسخ رابط صالونك بنجاح! شاركه مع زبائنك ✂️', 'success');
-          }).catch(() => {
-            prompt('انسخ رابط الحجز المباشر لصالونك:', fullClientUrl);
-          });
-        };
-      }
-
       const btnShareWa = document.getElementById('btn-share-whatsapp');
       if (btnShareWa) {
         const waText = encodeURIComponent(`احجز دورك الآن في ${settings.salon_name || 'صالون الحلاقة'} أونلاين بدون انتظار في الطابور عبر الرابط:\n${fullClientUrl} ✂️💈`);
@@ -1423,16 +1413,21 @@ function setupModalEventListeners() {
     }
   });
 
-  // Copy Salon Public Link
+  // Copy Salon Public Link (Single debounced handler)
   if (DOM.btnCopySalonLink) {
+    let copyDebounce = false;
     DOM.btnCopySalonLink.addEventListener('click', () => {
+      if (copyDebounce) return;
+      copyDebounce = true;
+      setTimeout(() => { copyDebounce = false; }, 800);
+
       if (!state.salonSettings?.slug) {
         showToast('جاري تجهيز رابط الصالون...', 'error');
         return;
       }
       const fullUrl = window.location.origin + window.location.pathname.replace(/dashboard\.html$/i, '') + 'index.html?s=' + state.salonSettings.slug;
       navigator.clipboard.writeText(fullUrl).then(() => {
-        showToast('تم نسخ رابط حجز الزبائن بنجاح! شاركه مع عملائك 📋💈', 'success');
+        showToast('تم نسخ رابط صالونك بنجاح! شاركه مع زبائنك ✂️', 'success');
       }).catch(() => {
         prompt('انسخ رابط حجز صالونك:', fullUrl);
       });
