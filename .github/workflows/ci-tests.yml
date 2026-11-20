@@ -1,0 +1,56 @@
+name: CI & Security Verification Suite
+
+on:
+  push:
+    branches: [ main, 'fix/**', 'feat/**' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Syntax, Unit Tests & Security Guards
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify JavaScript Syntax (node --check)
+        run: |
+          echo "::group::Running node --check on all js/*.js files"
+          for file in js/*.js; do
+            echo "Checking $file..."
+            node --check "$file"
+          done
+          echo "::endgroup::"
+
+      - name: Run Unit Tests (node --test)
+        run: |
+          echo "::group::Executing Real Unit Tests"
+          node --test tests/unit/*.test.mjs
+          echo "::endgroup::"
+
+      - name: Security Guard - Check for Deprecated / Vulnerable RPCs
+        run: |
+          echo "::group::Checking for banned deprecated RPCs"
+          FOUND_VULN=0
+          if grep -rn "reset_salon_password_direct" js/ *.html; then
+            echo "::error::Found forbidden call to reset_salon_password_direct"
+            FOUND_VULN=1
+          fi
+          if grep -rn "secure_barber_auth" js/ *.html; then
+            echo "::error::Found forbidden reference to secure_barber_auth"
+            FOUND_VULN=1
+          fi
+          if [ $FOUND_VULN -ne 0 ]; then
+            echo "Security guard check failed! Deprecated insecure RPCs found."
+            exit 1
+          fi
+          echo "Security audit passed: zero deprecated insecure RPC calls detected."
+          echo "::endgroup::"

@@ -194,9 +194,30 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- Drop legacy date check trigger before updating legacy records to prevent failure on past appointments
+DROP TRIGGER IF EXISTS trg_check_appointment_date ON appointments;
+
 -- Populate salon_id and barber_id on legacy orphan records
 UPDATE services SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
 UPDATE appointments SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
+-- Resolve legacy overlapping orphan appointments before assigning them to the primary chair
+UPDATE appointments a
+SET status = 'cancelled'
+WHERE a.barber_id IS NULL
+  AND a.status NOT IN ('cancelled', 'no_show')
+  AND EXISTS (
+    SELECT 1 FROM appointments b
+    WHERE b.id <> a.id
+      AND b.appointment_date = a.appointment_date
+      AND b.status NOT IN ('cancelled', 'no_show')
+      AND (
+        b.barber_id = '00000000-0000-0000-0000-000000000002'::uuid
+        OR (b.barber_id IS NULL AND (b.created_at, b.id) < (a.created_at, a.id))
+      )
+      AND a.start_time < b.end_time
+      AND a.end_time > b.start_time
+  );
+
 UPDATE appointments SET barber_id = '00000000-0000-0000-0000-000000000002'::uuid WHERE barber_id IS NULL;
 UPDATE blacklist SET salon_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE salon_id IS NULL;
 
@@ -289,11 +310,26 @@ CREATE POLICY "Owner can view appointments"
   );
 
 DROP POLICY IF EXISTS "Public can book pending appointments" ON appointments;
-CREATE POLICY "Public can book pending appointments" 
+DROP POLICY IF EXISTS "Anon can book pending online appointments" ON appointments;
+CREATE POLICY "Anon can book pending online appointments" 
   ON appointments FOR INSERT 
+  TO anon, authenticated
   WITH CHECK (
     status = 'pending' AND 
-    booking_type IN ('online', 'walk_in')
+    booking_type = 'online' AND 
+    salon_id IS NOT NULL AND 
+    barber_id IS NOT NULL
+  );
+
+DROP POLICY IF EXISTS "Owner can insert own appointments" ON appointments;
+CREATE POLICY "Owner can insert own appointments" 
+  ON appointments FOR INSERT 
+  TO authenticated 
+  WITH CHECK (
+    status IN ('pending', 'in_progress') AND 
+    booking_type IN ('online', 'walk_in') AND 
+    barber_id IS NOT NULL AND 
+    salon_id IN (SELECT id FROM salons WHERE owner_id = auth.uid())
   );
 
 DROP POLICY IF EXISTS "Owner can update appointments" ON appointments;
@@ -435,12 +471,16 @@ GRANT EXECUTE ON FUNCTION increment_views() TO authenticated;
 -- can log in without waiting for or clicking email confirmation links.
 -- =============================================================================
 CREATE OR REPLACE FUNCTION public.auto_confirm_new_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
 BEGIN
   NEW.email_confirmed_at = COALESCE(NEW.email_confirmed_at, now());
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 DROP TRIGGER IF EXISTS on_auth_user_created_auto_confirm ON auth.users;
 CREATE TRIGGER on_auth_user_created_auto_confirm
@@ -461,19 +501,23 @@ DROP FUNCTION IF EXISTS public.secure_barber_auth(TEXT, TEXT);
 
 -- 11.1 PREVENT SUSPENSION TAMPERING BY SALON OWNERS (Vulnerability 1.5)
 CREATE OR REPLACE FUNCTION public.check_salon_suspension_tamper()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
 BEGIN
   IF (OLD.is_suspended IS DISTINCT FROM NEW.is_suspended) OR 
      (OLD.suspended_reason IS DISTINCT FROM NEW.suspended_reason) THEN
     -- If request originates from authenticated client that is NOT verified platform admin
-    IF current_setting('request.jwt.claim.role', true) = 'authenticated' AND 
+    IF (auth.role() = 'authenticated' OR current_setting('request.jwt.claim.role', true) = 'authenticated') AND 
        NOT EXISTS (SELECT 1 FROM platform_admins WHERE email = current_setting('request.jwt.claim.email', true)) THEN
       RAISE EXCEPTION 'غير مصرح بتعديل حالة قفل الصالون إلا من خلال مالك المنصة الرئيسي' USING ERRCODE = '42501';
     END IF;
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS trg_prevent_suspension_tamper ON salons;
 CREATE TRIGGER trg_prevent_suspension_tamper
@@ -483,14 +527,22 @@ EXECUTE FUNCTION public.check_salon_suspension_tamper();
 
 -- 11.2 PREVENT PAST BOOKINGS (Smell 3.3)
 CREATE OR REPLACE FUNCTION public.check_appointment_date_valid()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_today_cairo DATE := (now() AT TIME ZONE 'Africa/Cairo')::date;
 BEGIN
-  IF NEW.appointment_date < CURRENT_DATE THEN
-    RAISE EXCEPTION 'لا يمكن حجز موعد في تاريخ ماضٍ' USING ERRCODE = 'P0002';
+  IF (TG_OP = 'INSERT') OR (TG_OP = 'UPDATE' AND OLD.appointment_date IS DISTINCT FROM NEW.appointment_date) THEN
+    IF NEW.appointment_date < v_today_cairo THEN
+      RAISE EXCEPTION 'لا يمكن حجز موعد في تاريخ ماضٍ' USING ERRCODE = 'P0002';
+    END IF;
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS trg_check_appointment_date ON appointments;
 CREATE TRIGGER trg_check_appointment_date
@@ -498,75 +550,15 @@ BEFORE INSERT OR UPDATE ON appointments
 FOR EACH ROW
 EXECUTE FUNCTION public.check_appointment_date_valid();
 
--- 11.3 AUTO-PROVISION PRIMARY BARBER ON NEW SALON (Bug 2.1 & 2.3)
-CREATE OR REPLACE FUNCTION public.auto_provision_primary_barber()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO barbers (id, salon_id, name, is_active)
-  VALUES (gen_random_uuid(), NEW.id, 'الكرسي الرئيسي', TRUE)
-  ON CONFLICT DO NOTHING;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
+-- 11.3 REMOVE AUTO-PROVISION PRIMARY BARBER (Prevent duplicate barber generation on salon signup)
 DROP TRIGGER IF EXISTS trg_auto_provision_primary_barber ON salons;
-CREATE TRIGGER trg_auto_provision_primary_barber
-AFTER INSERT ON salons
-FOR EACH ROW
-EXECUTE FUNCTION public.auto_provision_primary_barber();
+DROP FUNCTION IF EXISTS public.auto_provision_primary_barber();
 
--- 11.4 INSTANT SECURE PASSWORD RESET FOR SALON OWNERS (Zero Email Rate Limit Dependency)
--- Allows a verified salon owner to reset their password using their registered salon phone number
-CREATE OR REPLACE FUNCTION public.reset_salon_password_direct(
-  p_email TEXT,
-  p_phone TEXT,
-  p_new_password TEXT
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, auth, extensions
-AS $$
-DECLARE
-  v_user_id UUID;
-  v_clean_phone TEXT;
-BEGIN
-  IF p_email IS NULL OR p_phone IS NULL OR p_new_password IS NULL OR length(trim(p_new_password)) < 6 THEN
-    RETURN jsonb_build_object('success', false, 'message', 'يرجى إدخال البريد ورقم الهاتف وكلمة مرور لا تقل عن 6 أحرف.');
-  END IF;
-
-  v_clean_phone := regexp_replace(regexp_replace(p_phone, '\s+', '', 'g'), '^(\+20|0020)', '0');
-
-  -- Find owner user_id where salon phone matches
-  SELECT u.id INTO v_user_id
-  FROM auth.users u
-  JOIN salons s ON s.owner_id = u.id
-  WHERE lower(trim(u.email)) = lower(trim(p_email))
-    AND regexp_replace(regexp_replace(s.phone, '\s+', '', 'g'), '^(\+20|0020)', '0') = v_clean_phone
-  LIMIT 1;
-
-  IF v_user_id IS NULL THEN
-    RETURN jsonb_build_object('success', false, 'message', 'بيانات التحقق غير صحيحة، يرجى التأكد من البريد الإلكتروني ورقم هاتف الصالون المسجل.');
-  END IF;
-
-  -- Update encrypted_password directly in auth.users
-  UPDATE auth.users
-  SET encrypted_password = crypt(p_new_password, gen_salt('bf')),
-      email_confirmed_at = COALESCE(email_confirmed_at, now()),
-      updated_at = now()
-  WHERE id = v_user_id;
-
-  RETURN jsonb_build_object('success', true, 'message', 'تم تحديث كلمة المرور بنجاح! يمكنك الآن تسجيل الدخول مباشرة 🚀');
-END;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.reset_salon_password_direct(TEXT, TEXT, TEXT) TO anon, authenticated;
+-- 11.4 REMOVE DIRECT PASSWORD RESET (Security hardening)
+DROP FUNCTION IF EXISTS public.reset_salon_password_direct(TEXT, TEXT, TEXT);
 
 -- =============================================================================
 -- 12. SUPER ADMIN OWNER OVERVIEW & CONTROL (Lock & Oversee Salons)
--- =============================================================================
--- 12. ENTERPRISE SUPER ADMIN AUTHENTICATION (Zero Plaintext Secrets)
--- Authenticated via Supabase Auth & platform_admins table with Row Level Security
 -- =============================================================================
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE salons ADD COLUMN IF NOT EXISTS suspended_reason TEXT DEFAULT NULL;
@@ -601,7 +593,42 @@ END $$;
 ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON platform_admins FROM anon, authenticated;
 
--- Super Admin Zero-Friction Login & Auto-Setup RPC
+-- Dedicated table for active super admin sessions
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_id   UUID NOT NULL REFERENCES platform_admins(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_token_expires ON admin_sessions(token, expires_at);
+
+ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON admin_sessions FROM anon, authenticated;
+
+-- Session verification helper RPC
+CREATE OR REPLACE FUNCTION public.verify_admin_session(p_token UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_token IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM admin_sessions
+    WHERE token = p_token
+      AND expires_at > now()
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.verify_admin_session(UUID) TO anon, authenticated;
+
+-- Super Admin Login RPC (Returns 24h session token)
 CREATE OR REPLACE FUNCTION public.super_admin_login(p_email TEXT, p_password TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -610,7 +637,6 @@ SET search_path = public, extensions
 AS $$
 DECLARE
   v_clean_email TEXT := lower(trim(p_email));
-  v_admin_count INT;
   v_admin RECORD;
   v_token UUID;
 BEGIN
@@ -618,24 +644,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'message', 'يرجى إدخال البريد الإلكتروني وكلمة المرور.');
   END IF;
 
-  SELECT count(*) INTO v_admin_count FROM platform_admins;
-
-  -- 1. Auto First-Time Setup: If no admin exists yet, register this first user as the platform owner!
-  IF v_admin_count = 0 THEN
-    INSERT INTO platform_admins (id, email, password_hash)
-    VALUES (gen_random_uuid(), v_clean_email, crypt(p_password, gen_salt('bf')))
-    RETURNING id INTO v_token;
-
-    RETURN jsonb_build_object(
-      'success', true,
-      'token', v_token,
-      'email', v_clean_email,
-      'is_initial_setup', true,
-      'message', 'تم إنشاء حسابك وتأمينه كمالك رئيسي للمنصة بنجاح 👑'
-    );
-  END IF;
-
-  -- 2. Normal Login: lookup by email
+  -- 1. Lookup admin by email
   SELECT id, email, password_hash INTO v_admin
   FROM platform_admins
   WHERE lower(email) = v_clean_email;
@@ -644,20 +653,40 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'message', 'البريد الإلكتروني غير مسجل كمالك للمنصة.');
   END IF;
 
-  -- 3. Verify Bcrypt password hash
+  -- 2. Verify Bcrypt password hash
   IF v_admin.password_hash != crypt(p_password, v_admin.password_hash) THEN
     RETURN jsonb_build_object('success', false, 'message', 'كلمة المرور غير صحيحة.');
   END IF;
 
+  -- 3. Create 24-hour session token
+  INSERT INTO admin_sessions (admin_id, expires_at)
+  VALUES (v_admin.id, now() + interval '24 hours')
+  RETURNING token INTO v_token;
+
   RETURN jsonb_build_object(
     'success', true,
-    'token', v_admin.id,
+    'token', v_token,
     'email', v_admin.email
   );
 END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.super_admin_login(TEXT, TEXT) TO anon, authenticated;
+
+-- Super Admin Logout RPC
+CREATE OR REPLACE FUNCTION public.super_admin_logout(p_token UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  DELETE FROM admin_sessions WHERE token = p_token;
+  RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.super_admin_logout(UUID) TO anon, authenticated;
 
 -- Overview function: accessible ONLY with a valid admin token
 CREATE OR REPLACE FUNCTION public.super_admin_get_overview(p_token UUID)
@@ -675,7 +704,7 @@ DECLARE
   v_total_appointments INT;
   v_today_appointments INT;
 BEGIN
-  IF p_token IS NULL OR NOT EXISTS (SELECT 1 FROM platform_admins WHERE id = p_token) THEN
+  IF NOT verify_admin_session(p_token) THEN
     RAISE EXCEPTION 'Unauthorized: Invalid or expired admin session' USING ERRCODE = '42501';
   END IF;
 
@@ -734,7 +763,7 @@ SECURITY DEFINER
 SET search_path = public, extensions
 AS $$
 BEGIN
-  IF p_token IS NULL OR NOT EXISTS (SELECT 1 FROM platform_admins WHERE id = p_token) THEN
+  IF NOT verify_admin_session(p_token) THEN
     RAISE EXCEPTION 'Unauthorized: Invalid or expired admin session' USING ERRCODE = '42501';
   END IF;
 
@@ -748,31 +777,151 @@ BEGIN
 END;
 $$;
 
+-- Get salon appointments for super admin: accessible ONLY with a valid admin token
+CREATE OR REPLACE FUNCTION public.super_admin_get_salon_appointments(p_token UUID, p_salon_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_appointments JSONB;
+BEGIN
+  IF NOT verify_admin_session(p_token) THEN
+    RAISE EXCEPTION 'Unauthorized: Invalid or expired admin session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT jsonb_agg(
+    jsonb_build_object(
+      'id', a.id,
+      'salon_id', a.salon_id,
+      'barber_id', a.barber_id,
+      'service_id', a.service_id,
+      'client_name', a.client_name,
+      'client_phone', a.client_phone,
+      'appointment_date', a.appointment_date,
+      'start_time', a.start_time,
+      'end_time', a.end_time,
+      'status', a.status,
+      'booking_type', a.booking_type,
+      'created_at', a.created_at,
+      'services', jsonb_build_object(
+        'name', s.name,
+        'price', s.price,
+        'duration_minutes', s.duration_minutes
+      ),
+      'barbers', jsonb_build_object(
+        'name', COALESCE(b.name, 'غير محدد')
+      )
+    ) ORDER BY a.appointment_date DESC, a.start_time DESC
+  ) INTO v_appointments
+  FROM (
+    SELECT * FROM appointments
+    WHERE salon_id = p_salon_id
+    ORDER BY appointment_date DESC, start_time DESC
+    LIMIT 100
+  ) a
+  LEFT JOIN services s ON s.id = a.service_id
+  LEFT JOIN barbers b ON b.id = a.barber_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'appointments', COALESCE(v_appointments, '[]'::jsonb)
+  );
+END;
+$$;
+
 GRANT EXECUTE ON FUNCTION public.super_admin_get_overview(UUID) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.super_admin_toggle_salon(UUID, UUID, BOOLEAN, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.super_admin_get_salon_appointments(UUID, UUID) TO anon, authenticated;
 
 -- =============================================================================
--- 13. REAL HARD LOCKDOWN TRIGGER (Blocks any booking for suspended salons)
+-- 13. COMPREHENSIVE APPOINTMENT VALIDATION TRIGGER
+-- Guards against suspended/paused salons, cross-salon tampering, blacklists & abuse
 -- =============================================================================
-CREATE OR REPLACE FUNCTION public.check_salon_not_suspended()
-RETURNS TRIGGER AS $$
+DROP TRIGGER IF EXISTS trg_check_salon_suspended ON appointments;
+DROP FUNCTION IF EXISTS public.check_salon_not_suspended();
+
+CREATE OR REPLACE FUNCTION public.validate_appointment_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_salon RECORD;
+  v_sanitized_phone TEXT;
+  v_active_count INT;
 BEGIN
-  IF NEW.salon_id IS NOT NULL AND EXISTS (
-    SELECT 1 FROM salons 
-    WHERE id = NEW.salon_id 
-      AND is_suspended = TRUE
-  ) THEN
-    RAISE EXCEPTION 'هذا الصالون متوقف حالياً بقرار من إدارة المنصة ولا يقبل أي حجوزات جديدة'
-      USING ERRCODE = 'P0001';
+  -- 1. Ensure salon exists and check suspension & pause status
+  SELECT is_suspended, is_paused, suspended_reason INTO v_salon
+  FROM salons
+  WHERE id = NEW.salon_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'الصالون المطلوب غير موجود' USING ERRCODE = 'P0001';
   END IF;
+
+  IF v_salon.is_suspended THEN
+    RAISE EXCEPTION 'هذا الصالون متوقف حالياً بقرار من إدارة المنصة ولا يقبل أي حجوزات جديدة' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_salon.is_paused AND NEW.booking_type = 'online' THEN
+    RAISE EXCEPTION 'عذراً، الصالون في استراحة مؤقتة حالياً ولا يستقبل حجوزات أونلاين' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- 2. Validate barber belongs to this salon and is active
+  IF NEW.barber_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM barbers 
+      WHERE id = NEW.barber_id AND salon_id = NEW.salon_id AND is_active = TRUE
+    ) THEN
+      RAISE EXCEPTION 'الحلاق المختار غير متاح أو لا يتبع هذا الصالون' USING ERRCODE = 'P0003';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'يجب تحديد الحلاق لإتمام الحجز' USING ERRCODE = 'P0003';
+  END IF;
+
+  -- 3. Validate service belongs to this salon (or global template) and is active
+  IF NOT EXISTS (
+    SELECT 1 FROM services 
+    WHERE id = NEW.service_id AND (salon_id = NEW.salon_id OR salon_id IS NULL) AND is_active = TRUE
+  ) THEN
+    RAISE EXCEPTION 'الخدمة المطلوبة غير متاحة أو لا تتبع هذا الصالون' USING ERRCODE = 'P0004';
+  END IF;
+
+  -- 4. Check client phone against blacklist
+  v_sanitized_phone := regexp_replace(regexp_replace(NEW.client_phone, '\s+', '', 'g'), '^(\+20|0020)', '0');
+
+  IF EXISTS (
+    SELECT 1 FROM blacklist 
+    WHERE salon_id = NEW.salon_id 
+      AND regexp_replace(regexp_replace(client_phone, '\s+', '', 'g'), '^(\+20|0020)', '0') = v_sanitized_phone 
+      AND is_blocked = TRUE
+  ) THEN
+    RAISE EXCEPTION 'هذا العميل مسجل في قائمة الحظر الخاصة بالصالون' USING ERRCODE = 'P0005';
+  END IF;
+
+  -- 5. Rate limit: Max 2 active appointments (pending / in_progress) per phone per day in this salon
+  SELECT count(*) INTO v_active_count
+  FROM appointments
+  WHERE salon_id = NEW.salon_id
+    AND appointment_date = NEW.appointment_date
+    AND regexp_replace(regexp_replace(client_phone, '\s+', '', 'g'), '^(\+20|0020)', '0') = v_sanitized_phone
+    AND status IN ('pending', 'in_progress');
+
+  IF v_active_count >= 2 THEN
+    RAISE EXCEPTION 'لا يمكن حجز أكثر من موعدين نشطين لنفس الرقم في نفس اليوم' USING ERRCODE = 'P0006';
+  END IF;
+
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-DROP TRIGGER IF EXISTS trg_check_salon_suspended ON appointments;
-CREATE TRIGGER trg_check_salon_suspended
+DROP TRIGGER IF EXISTS trg_validate_appointment_insert ON appointments;
+CREATE TRIGGER trg_validate_appointment_insert
 BEFORE INSERT ON appointments
 FOR EACH ROW
-EXECUTE FUNCTION public.check_salon_not_suspended();
+EXECUTE FUNCTION public.validate_appointment_insert();
 
 

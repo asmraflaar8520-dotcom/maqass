@@ -5,9 +5,11 @@
 
 import { CONFIG, supabase, ARABIC_DAYS } from './config.js';
 import {
+  isDemoMode,
   getSalonSettings,
   getSalonForCurrentBarber,
   getBarbers,
+  getAllBarbers,
   manageBarber,
   deleteBarber,
   getTodayAppointments,
@@ -26,7 +28,7 @@ import {
   updateUserPassword,
   signOutBarber,
   getBarberSession
-} from './api.js?v=3.1.0';
+} from './api.js';
 import {
   formatTime12H,
   formatDateArabic,
@@ -118,6 +120,7 @@ const DOM = {
   settingSalonName: document.getElementById('setting-salon-name'),
   settingSalonPhone: document.getElementById('setting-salon-phone'),
   workingHoursInputs: document.getElementById('working-hours-inputs'),
+  btnSaveSalonSettings: document.getElementById('btn-save-settings'),
   blacklistTableBody: document.getElementById('blacklist-table-body'),
 
   // Modals
@@ -203,6 +206,8 @@ function openRecoveryModal() {
   }
 }
 
+let dashboardListenersBound = false;
+
 /**
  * Boots Dashboard after Authentication
  */
@@ -213,30 +218,33 @@ async function bootDashboard() {
   // Set default date to Egypt Local Time
   DOM.queueDatePicker.value = state.selectedDate;
 
-  // Initial Data Fetches
+  // Initial Data Fetches: load header & settings first to resolve salon ID
+  await loadSalonHeaderAndSettings();
   await Promise.all([
-    loadSalonHeaderAndSettings(),
     loadBarbersList(),
     loadQueueData(true),
     loadServicesCatalog(),
     loadBlacklistData()
   ]);
 
-  // Bind Listeners
-  setupNavigationEventListeners();
-  setupCommandBarEventListeners();
-  setupModalEventListeners();
+  // Bind Listeners only once to prevent duplicate executions
+  if (!dashboardListenersBound) {
+    dashboardListenersBound = true;
+    setupNavigationEventListeners();
+    setupCommandBarEventListeners();
+    setupModalEventListeners();
+
+    // Tab-Visibility Auto-Sync
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        loadQueueData(false);
+        loadSalonHeaderAndSettings();
+      }
+    });
+  }
 
   // Initialize Free-Tier Realtime Sync for Today's Date
   setupRealtimeSubscription(state.selectedDate);
-
-  // Tab-Visibility Auto-Sync
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      loadQueueData(false);
-      loadSalonHeaderAndSettings();
-    }
-  });
 }
 
 /**
@@ -584,13 +592,13 @@ function applySuspensionState(settings) {
   // Header lock badge
   let lockBadge = document.getElementById('dash-lock-badge');
   if (isSuspended) {
-    if (!lockBadge && DOM.salonName) {
+    if (!lockBadge && DOM.dashSalonName) {
       lockBadge = document.createElement('span');
       lockBadge.id = 'dash-lock-badge';
       lockBadge.className = 'badge';
       lockBadge.style.cssText = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #ef4444; margin-right: 8px; font-size: 0.8rem;';
       lockBadge.textContent = 'حساب مقفل بقرار الإدارة 🔒';
-      DOM.salonName.parentNode.appendChild(lockBadge);
+      DOM.dashSalonName.parentNode.appendChild(lockBadge);
     }
     if (suspAlert) {
       suspAlert.style.display = 'flex';
@@ -604,7 +612,7 @@ function applySuspensionState(settings) {
     if (DOM.btnSaveSalonSettings) DOM.btnSaveSalonSettings.disabled = true;
     if (DOM.settingSalonName) DOM.settingSalonName.disabled = true;
     if (DOM.settingSalonPhone) DOM.settingSalonPhone.disabled = true;
-    if (DOM.btnOpenAddServiceModal) DOM.btnOpenAddServiceModal.disabled = true;
+    if (DOM.btnAddServiceModal) DOM.btnAddServiceModal.disabled = true;
   } else {
     // Restore all controls
     if (lockBadge) lockBadge.remove();
@@ -614,7 +622,7 @@ function applySuspensionState(settings) {
     if (DOM.btnSaveSalonSettings) DOM.btnSaveSalonSettings.disabled = false;
     if (DOM.settingSalonName) DOM.settingSalonName.disabled = false;
     if (DOM.settingSalonPhone) DOM.settingSalonPhone.disabled = false;
-    if (DOM.btnOpenAddServiceModal) DOM.btnOpenAddServiceModal.disabled = false;
+    if (DOM.btnAddServiceModal) DOM.btnAddServiceModal.disabled = false;
   }
 }
 
@@ -665,7 +673,7 @@ async function loadBarbersList() {
   if (!state.salonSettings?.id) return;
 
   try {
-    const barbers = await getBarbers(state.salonSettings.id);
+    const barbers = await getAllBarbers(state.salonSettings.id);
     state.barbers = barbers;
 
     // Render in Tab 3 Barbers Management
@@ -863,7 +871,7 @@ async function loadQueueData(showLoading = true) {
   } catch (err) {
     DOM.queueCardsContainer.innerHTML = `
       <div class="empty-state">
-        <p style="color: #ef4444;">${err.message}</p>
+        <p style="color: #ef4444;">${escapeHtml(err.message)}</p>
       </div>
     `;
   }
@@ -1263,15 +1271,23 @@ function setupRealtimeSubscription(date) {
     state.realtimeChannel = null;
   }
 
+  const channelName = state.salonSettings?.id 
+    ? `appointments-${state.salonSettings.id}-${date}` 
+    : `appointments-${date}`;
+
+  const filter = state.salonSettings?.id
+    ? `salon_id=eq.${state.salonSettings.id}`
+    : `appointment_date=eq.${date}`;
+
   state.realtimeChannel = supabase
-    .channel(`appointments-${date}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
         event: '*',
         schema: 'public',
         table: 'appointments',
-        filter: `appointment_date=eq.${date}`
+        filter: filter
       },
       () => {
         loadQueueData(false);

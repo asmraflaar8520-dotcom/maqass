@@ -10,7 +10,7 @@ import {
   getSuperAdminOverview,
   toggleSalonSuspension,
   getSalonAppointmentsAdmin
-} from './api.js?v=3.0.0';
+} from './api.js';
 import {
   showToast,
   formatTime12H,
@@ -320,15 +320,15 @@ function renderSalonsTable() {
       <td>
         <div class="table-actions">
           ${isSuspended ? `
-            <button class="btn-action-sm btn-unlock" data-action="unlock" data-id="${salon.id}" data-name="${salon.salon_name}">
+            <button class="btn-action-sm btn-unlock" data-action="unlock" data-id="${salon.id}" data-name="${escapeHtml(salon.salon_name)}">
               فك القفل 🟢
             </button>
           ` : `
-            <button class="btn-action-sm btn-lock" data-action="lock" data-id="${salon.id}" data-name="${salon.salon_name}">
+            <button class="btn-action-sm btn-lock" data-action="lock" data-id="${salon.id}" data-name="${escapeHtml(salon.salon_name)}">
               قفل الصالون 🔒
             </button>
           `}
-          <button class="btn-action-sm btn-inspect" data-action="inspect" data-id="${salon.id}" data-name="${salon.salon_name}" data-slug="${salon.slug}">
+          <button class="btn-action-sm btn-inspect" data-action="inspect" data-id="${salon.id}" data-name="${escapeHtml(salon.salon_name)}" data-slug="${escapeHtml(salon.slug)}">
             فحص الحجوزات 📋
           </button>
         </div>
@@ -454,7 +454,7 @@ async function handleInspectSalon(salonId, salonName, salonSlug) {
     DOM.inspectTableBody.innerHTML = `
       <tr>
         <td colspan="5" style="text-align: center; padding: 24px; color: #ef4444;">
-          تعذر تحميل بيانات الحجوزات: ${err.message}
+          تعذر تحميل بيانات الحجوزات: ${escapeHtml(err.message)}
         </td>
       </tr>
     `;

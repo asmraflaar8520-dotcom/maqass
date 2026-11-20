@@ -3,7 +3,8 @@
 // Zero-Dependency, Pure ES6 Browser Modules (Egypt Local Timezone Hardened)
 // =============================================================================
 
-import { CONFIG, supabase } from './config.js';
+const TIMEZONE = 'Africa/Cairo';
+const DEFAULT_SLOT_INTERVAL_MINUTES = 15;
 
 /**
  * Ultra-fast HTML sanitizer to prevent Cross-Site Scripting (XSS)
@@ -30,7 +31,7 @@ export function escapeHtml(str) {
 export function getEgyptLocalDate(date = new Date()) {
   try {
     const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: CONFIG.TIMEZONE || 'Africa/Cairo',
+      timeZone: TIMEZONE,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
@@ -53,13 +54,13 @@ export function getEgyptLocalDate(date = new Date()) {
 export function getEgyptLocalTimeMinutes(date = new Date()) {
   try {
     const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: CONFIG.TIMEZONE || 'Africa/Cairo',
+      timeZone: TIMEZONE,
       hour: 'numeric',
       minute: 'numeric',
-      hour12: false
+      hourCycle: 'h23'
     });
     const parts = formatter.formatToParts(date);
-    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10) % 24;
     const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
     return (hour * 60) + minute;
   } catch {
@@ -213,7 +214,7 @@ export function calculateAvailableSlots(
   }
 
   const availableSlots = [];
-  const step = CONFIG.DEFAULT_SLOT_INTERVAL_MINUTES || 15;
+  const step = DEFAULT_SLOT_INTERVAL_MINUTES;
   const barbersList = (activeBarbers && activeBarbers.length > 0) 
     ? activeBarbers 
     : [];
@@ -227,6 +228,11 @@ export function calculateAvailableSlots(
 
     // Filter out past slots for today
     if (currentDayMinutes !== -1 && slotStart < currentDayMinutes) {
+      continue;
+    }
+
+    // Skip slots that cross midnight boundary (would break end_time > start_time in DB)
+    if (slotStart < 1440 && slotEnd > 1440) {
       continue;
     }
 
@@ -264,6 +270,10 @@ export function calculateAvailableSlots(
     if (availableBarber) {
       const time24 = minutesToTime(normStart);
       const endTime24 = minutesToTime(normEnd);
+      // For after-midnight slots, the appointment belongs to the next calendar day
+      const slotDate = (normStart < openMinutes && targetDate) 
+        ? (() => { const d = new Date(targetDate + 'T00:00:00'); d.setDate(d.getDate() + 1); return getEgyptLocalDate(d); })()
+        : targetDate;
       availableSlots.push({
         time: time24,
         endTime: endTime24,
@@ -272,7 +282,8 @@ export function calculateAvailableSlots(
         startMinutes: slotStart,
         endMinutes: slotEnd,
         barberId: availableBarber.id,
-        barberName: availableBarber.name
+        barberName: availableBarber.name,
+        appointmentDate: slotDate || targetDate
       });
     }
   }
@@ -292,6 +303,7 @@ export function generateWhatsAppLink({
   clientName = '',
   salonName = 'مِقَصْ',
   serviceName = '',
+  barberName = '',
   date = '',
   time = '',
   type = 'confirmation'
@@ -332,6 +344,18 @@ export function generateWhatsAppLink({
 تقدر تحجز ميعاد تاني في أي وقت يناسبك من خلال الرابط. نتشرف بيك دايمًا!`;
       break;
 
+    case 'client_to_salon':
+      message =
+`السلام عليكم ✂️
+أنا *${clientName || 'عميل'}* وحابب أأكد حجزي في *${salonName}*:
+
+💈 *الخدمة:* ${serviceName}${barberName ? `\n💇 *الحلاق:* ${barberName}` : ''}
+📅 *اليوم:* ${formattedDate}
+⏰ *الميعاد:* ${formattedTime}
+
+شكراً ليكم ومستنيكم! 🙏`;
+      break;
+
     case 'inquiry':
     default:
       message = `السلام عليكم، بخصوص الحجز في ${salonName}...`;
@@ -347,15 +371,19 @@ export function generateWhatsAppLink({
  * Prevents redundant writes to Supabase Free Tier by storing a flag in sessionStorage.
  * @returns {Promise<number|null>} Total views count or null
  */
-export async function triggerVisitorCounter() {
-  const sessionKey = CONFIG.STORAGE_KEYS.VIEW_RECORDED;
+export async function triggerVisitorCounter(supabaseClient = null) {
+  if (typeof sessionStorage === 'undefined') return null;
+  const sessionKey = 'maqass_view_counted_session';
 
   if (sessionStorage.getItem(sessionKey)) {
     return null;
   }
 
+  const client = supabaseClient || (typeof window !== 'undefined' && window.supabase);
+  if (!client || !client.rpc) return null;
+
   try {
-    const { data, error } = await supabase.rpc('increment_views');
+    const { data, error } = await client.rpc('increment_views');
     if (!error) {
       sessionStorage.setItem(sessionKey, 'true');
       return data;

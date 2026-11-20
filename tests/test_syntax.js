@@ -1,20 +1,21 @@
+const { execSync } = require('child_process');
 const fs = require('fs');
-const files = ['js/config.js', 'js/utils.js', 'js/api.js', 'js/dashboard.js', 'js/client.js'];
+const path = require('path');
+
+const jsDir = path.resolve(__dirname, '..', 'js');
+const files = fs.readdirSync(jsDir)
+  .filter(f => f.endsWith('.js'))
+  .map(f => path.join('js', f));
+
 let allOk = true;
 
 for (const f of files) {
-  const code = fs.readFileSync(f, 'utf8');
-  // Strip imports and exports to test function body syntax
-  const clean = code
-    .replace(/import\s+[\s\S]*?from\s+['"][^'"]+['"];?/g, '')
-    .replace(/export\s+(async\s+function|function|const|let|var|default|class)\s+/g, '$1 ')
-    .replace(/export\s*\{[\s\S]*?\};?/g, '');
   try {
-    new Function(clean);
-    console.log('[PASS]', f, 'syntax is 100% valid!');
+    execSync(`node --check "${f}"`, { stdio: 'pipe' });
+    console.log(`[PASS] ${f} syntax is 100% valid!`);
   } catch (err) {
     allOk = false;
-    console.error('[FAIL]', f, err.message);
+    console.error(`[FAIL] ${f}:`, err.stderr ? err.stderr.toString().trim() : err.message);
   }
 }
 

@@ -4,19 +4,19 @@
 // Timezone-Safe (Africa/Cairo) & Double-Booking Auto-Recovery
 // =============================================================================
 
-import { CONFIG, ARABIC_DAYS } from './config.js';
+import { CONFIG, ARABIC_DAYS, supabase } from './config.js';
 import { 
   getSalonSettings, 
   getBarbers,
   getActiveServices, 
   getBookedSlots, 
   checkBlacklist, 
-  createAppointment 
+  createAppointment,
+  incrementSalonViews
 } from './api.js';
 import { 
   calculateAvailableSlots, 
   generateWhatsAppLink, 
-  triggerVisitorCounter, 
   formatDateArabic, 
   formatTime12H,
   getEgyptLocalDate,
@@ -124,8 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDateConstraints();
   setupEventListeners();
 
-  // Instant parallel data fetching & background non-blocking counter
-  initVisitorCounter(); // Non-blocking
+  // Instant parallel data fetching
   loadSalonProfile();   // Master profile & services loader (Instant cache + network refresh)
 });
 
@@ -279,9 +278,10 @@ async function loadSalonProfile() {
     const settings = await getSalonSettings(state.salonSlug);
 
     if (!settings) {
-      // Salon not found by that slug: seamlessly redirect to Dashboard/Login
+      // Salon not found by that slug: show not found screen
       if (DOM.salonStatus) DOM.salonStatus.textContent = 'الرابط غير صحيح أو منتهي ⚠️';
-      window.location.replace('dashboard.html');
+      if (DOM.salonNotFound) DOM.salonNotFound.style.display = 'block';
+      if (DOM.bookingContainer) DOM.bookingContainer.style.display = 'none';
       return;
     }
 
@@ -290,6 +290,15 @@ async function loadSalonProfile() {
 
     localStorage.setItem(cacheKey, JSON.stringify(settings));
     renderSalonProfileDOM(settings);
+
+    // Increment views per salon atomically
+    if (settings && settings.id) {
+      incrementSalonViews(settings.id).then(newCount => {
+        if (newCount !== null && DOM.viewsCount) {
+          DOM.viewsCount.textContent = Number(newCount).toLocaleString('ar-EG');
+        }
+      }).catch(vErr => console.warn('Visitor counter warning:', vErr));
+    }
 
     // Fetch active barbers and active services for this specific salon in parallel
     if (settings && settings.id && !settings.is_suspended) {
@@ -530,7 +539,7 @@ async function loadServices(salonId = null) {
       DOM.servicesContainer.style.display = 'block';
       DOM.servicesContainer.innerHTML = `
         <div class="empty-state">
-          <p style="color: #ef4444;">${err.message}</p>
+          <p style="color: #ef4444;">${escapeHtml(err.message)}</p>
         </div>
       `;
     }
@@ -816,7 +825,7 @@ async function handleBookingSubmit(e) {
   DOM.btnSubmitBooking.innerHTML = '<div class="spinner"></div> جاري التحقق...';
 
   try {
-    const { isBlocked } = await checkBlacklist(phone);
+    const { isBlocked } = await checkBlacklist(phone, state.salonSettings?.id);
     if (isBlocked) {
       DOM.blacklistAlert.style.display = 'flex';
       DOM.btnSubmitBooking.disabled = false;
@@ -835,7 +844,7 @@ async function handleBookingSubmit(e) {
       service_id: state.selectedService.id,
       client_name: name,
       client_phone: phone,
-      appointment_date: state.selectedDate,
+      appointment_date: state.selectedSlot.appointmentDate || state.selectedDate,
       start_time: state.selectedSlot.time,
       end_time: state.selectedSlot.endTime
     };
@@ -894,7 +903,7 @@ function renderSuccessScreen(appointment, clientName, clientPhone) {
     barberName: state.selectedSlot?.barberName || '',
     date: appointment.appointment_date,
     time: appointment.start_time,
-    type: 'confirmation'
+    type: 'client_to_salon'
   });
 
   DOM.btnWhatsAppConfirm.href = whatsappUrl;

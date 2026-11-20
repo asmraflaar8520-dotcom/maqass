@@ -25,7 +25,6 @@ export const CONFIG = {
   TIMEZONE: 'Africa/Cairo',
   DEFAULT_SLOT_INTERVAL_MINUTES: 15, // Grid resolution for checking time slots
   MAX_DAYS_IN_ADVANCE: 7,            // Allow booking up to 7 days ahead
-  DEFAULT_SALON_ID: 1,
   
   // Storage keys for local caching & session tracking
   STORAGE_KEYS: {

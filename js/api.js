@@ -230,6 +230,38 @@ export async function getSalonSettings(identifier = null) {
 export const getSalon = getSalonSettings;
 
 /**
+ * Fetches all barbers (active & inactive) for salon management in dashboard
+ * @param {string} [salonId]
+ * @returns {Promise<Array<Object>>}
+ */
+export async function getAllBarbers(salonId = null) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
+  if (isDemoMode()) {
+    return getDemoStore().barbers || [
+      { id: 'demo-barber-1', name: 'الأسطى أحمد', is_active: true },
+      { id: 'demo-barber-2', name: 'الأسطى محمود', is_active: true }
+    ];
+  }
+
+  try {
+    let q = supabase
+      .from('barbers')
+      .select('id, salon_id, name, is_active, created_at');
+
+    if (targetSalonId) {
+      q = q.eq('salon_id', targetSalonId);
+    }
+
+    const { data, error } = await q.order('created_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    console.warn('getAllBarbers warning:', err);
+    return [];
+  }
+}
+
+/**
  * Fetches active barbers / chairs for a salon
  * @param {string} [salonId]
  * @returns {Promise<Array<Object>>}
@@ -254,15 +286,14 @@ export async function getBarbers(salonId = null) {
 
     const { data, error } = await q.order('created_at', { ascending: true });
 
-    if (!error && data && data.length > 0) {
+    if (!error && data) {
       return data;
     }
 
-    // Default barber fallback
-    return [{ id: '00000000-0000-0000-0000-000000000002', name: 'الحلاق الرئيسي', is_active: true }];
+    return [];
   } catch (err) {
     console.warn('getBarbers warning:', err);
-    return [{ id: 'default', name: 'الحلاق الرئيسي', is_active: true }];
+    return [];
   }
 }
 
@@ -293,19 +324,11 @@ export async function getActiveServices(salonId = null) {
       throw new BookingError('فشل في جلب قائمة الخدمات المتاحة.', error.code);
     }
 
-    if (data && data.length > 0) return data;
-
-    // Fallback: fetch services without salon_id filter
-    const { data: fallbackServices } = await supabase
-      .from('services')
-      .select('id, salon_id, name, price, duration_minutes, is_active')
-      .eq('is_active', true)
-      .limit(5);
-
-    return fallbackServices || [];
+    return data || [];
   } catch (err) {
     if (err instanceof BookingError) throw err;
-    return getDemoStore().services.filter(s => s.is_active);
+    console.warn('getActiveServices warning:', err);
+    return [];
   }
 }
 
@@ -504,6 +527,25 @@ export async function createAppointment(payload) {
     booking_type: payload.booking_type || 'online'
   };
 
+  // If barber was 'any' or unassigned, auto-resolve to first active chair to satisfy strict RLS
+  if (!insertData.barber_id && insertData.salon_id) {
+    try {
+      const { data: bData } = await supabase
+        .from('barbers')
+        .select('id')
+        .eq('salon_id', insertData.salon_id)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (bData?.id) {
+        insertData.barber_id = bData.id;
+      }
+    } catch (bErr) {
+      console.warn('Could not auto-resolve barber_id:', bErr);
+    }
+  }
+
   try {
     // Perform minimal insert without .select() to preserve strict RLS zero-PII security
     const { error } = await supabase
@@ -579,7 +621,7 @@ export async function signInBarber(email, password = '') {
     throw new BookingError('يرجى إدخال البريد الإلكتروني وكلمة المرور.');
   }
 
-  // 1. Proactively try secure_barber_auth if RPC is available (auto-confirms & syncs)
+  // Proactively authenticate via Supabase Auth
   try {
     const { data, error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
@@ -663,48 +705,6 @@ export async function resetBarberPassword(email) {
 }
 
 /**
- * Instant phone-verified password reset for salon owners (Bypasses email rate limits)
- * @param {string} email
- * @param {string} phone
- * @param {string} newPassword
- * @returns {Promise<Object>}
- */
-export async function resetSalonPasswordDirect(email, phone, newPassword) {
-  if (isDemoMode()) {
-    return { success: true, message: 'تم تحديث كلمة المرور بنجاح في الوضع التجريبي!' };
-  }
-
-  const cleanEmail = (email || '').trim().toLowerCase();
-  const cleanPhone = (phone || '').trim();
-  const cleanPassword = (newPassword || '').trim();
-
-  if (!cleanEmail || !cleanPhone || !cleanPassword) {
-    throw new BookingError('يرجى إدخال البريد ورقم الهاتف وكلمة المرور الجديدة.');
-  }
-
-  if (cleanPassword.length < 6) {
-    throw new BookingError('كلمة المرور يجب ألا تقل عن 6 أحرف أو أرقام.');
-  }
-
-  const { data, error } = await supabase.rpc('reset_salon_password_direct', {
-    p_email: cleanEmail,
-    p_phone: cleanPhone,
-    p_new_password: cleanPassword
-  });
-
-  if (error) {
-    console.error('Direct reset error:', error);
-    throw new BookingError('تعذر تحديث كلمة المرور: ' + error.message);
-  }
-
-  if (!data?.success) {
-    throw new BookingError(data?.message || 'بيانات التحقق غير صحيحة.');
-  }
-
-  return data;
-}
-
-/**
  * Updates user password during password recovery or settings change
  * @param {string} newPassword
  * @returns {Promise<Object>}
@@ -764,7 +764,8 @@ export async function getBarberSession() {
     console.warn('Session check warning:', err);
   }
 
-  return sessionStorage.getItem(ADMIN_PASSCODE_KEY) === 'true';
+  sessionStorage.removeItem(ADMIN_PASSCODE_KEY);
+  return false;
 }
 
 /**
@@ -983,17 +984,10 @@ export async function getSalonForCurrentBarber() {
       if (data) return data;
     }
 
-    // Fallback: main salon
-    const { data: mainSalon } = await supabase.from('salons').select('*').limit(1).maybeSingle();
-    if (mainSalon) return mainSalon;
-
-    const { data: legacy } = await supabase.from('salon_settings').select('*').eq('id', 1).maybeSingle();
-    if (legacy) return legacy;
-
-    return getDemoStore().salon_settings;
+    return null;
   } catch (err) {
     console.warn('getSalonForCurrentBarber fallback:', err);
-    return getDemoStore().salon_settings;
+    return null;
   }
 }
 
@@ -1116,7 +1110,7 @@ export async function toggleSalonPause(isPaused, salonId = null) {
     const { error } = await supabase
       .from('salon_settings')
       .update({ is_paused: isPaused, updated_at: new Date().toISOString() })
-      .eq('id', CONFIG.DEFAULT_SALON_ID);
+      .eq('id', 1);
 
     if (error) throw error;
     return isPaused;
@@ -1509,7 +1503,7 @@ export async function saveSalonSettings(settings, salonId = null) {
         working_hours: settings.working_hours,
         updated_at: new Date().toISOString()
       })
-      .eq('id', CONFIG.DEFAULT_SALON_ID);
+      .eq('id', 1);
 
     if (error) throw error;
     return true;
@@ -1843,6 +1837,14 @@ export function getSuperAdminToken() {
  * Signs out the Super Admin
  */
 export async function signOutSuperAdmin() {
+  const token = getSuperAdminToken();
+  if (token && !isDemoMode()) {
+    try {
+      await supabase.rpc('super_admin_logout', { p_token: token });
+    } catch (err) {
+      console.warn('super_admin_logout RPC warning:', err);
+    }
+  }
   sessionStorage.removeItem(SUPER_ADMIN_STORAGE_KEY);
 }
 
@@ -1957,14 +1959,18 @@ export async function toggleSalonSuspension({ salonId, suspend, reason = null })
  * @returns {Promise<Array<Object>>}
  */
 export async function getSalonAppointmentsAdmin(salonId) {
+  if (isDemoMode()) {
+    return getDemoStore().appointments.filter(a => a.salon_id === salonId);
+  }
+
+  const token = getSuperAdminToken();
+  if (!token) return [];
+
   try {
-    const { data, error } = await supabase
-      .from('appointments')
-      .select('*, services(name, price, duration_minutes), barbers(name)')
-      .eq('salon_id', salonId)
-      .order('appointment_date', { ascending: false })
-      .order('appointment_time', { ascending: false })
-      .limit(100);
+    const { data, error } = await supabase.rpc('super_admin_get_salon_appointments', {
+      p_token: token,
+      p_salon_id: salonId
+    });
 
     if (error) throw error;
     return data || [];
