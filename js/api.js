@@ -994,7 +994,8 @@ export async function getSalonForCurrentBarber() {
 /**
  * Manages (creates or updates) a barber chair
  */
-export async function manageBarber({ id = null, salonId, name, isActive = true }) {
+export async function manageBarber({ id = null, salonId = null, name, isActive = true }) {
+  const targetSalonId = salonId || localStorage.getItem(CONFIG.STORAGE_KEYS.CURRENT_SALON_ID);
   try {
     if (id) {
       const { data, error } = await supabase
@@ -1008,7 +1009,7 @@ export async function manageBarber({ id = null, salonId, name, isActive = true }
     } else {
       const { data, error } = await supabase
         .from('barbers')
-        .insert({ salon_id: salonId, name: name.trim(), is_active: isActive })
+        .insert({ salon_id: targetSalonId, name: name.trim(), is_active: isActive })
         .select()
         .single();
       if (error) throw error;
@@ -1419,12 +1420,31 @@ export async function addWalkInAppointment(serviceId, force = false, salonId = n
     return newWalkIn;
   }
 
+  let resolvedBarberId = (barberId && barberId !== 'any') ? barberId : null;
+  if (!resolvedBarberId && targetSalonId) {
+    try {
+      const { data: bData } = await supabase
+        .from('barbers')
+        .select('id')
+        .eq('salon_id', targetSalonId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (bData?.id) {
+        resolvedBarberId = bData.id;
+      }
+    } catch (bErr) {
+      console.warn('Could not auto-resolve barber_id for walk-in:', bErr);
+    }
+  }
+
   try {
     const { data: walkIn, error: wErr } = await supabase
       .from('appointments')
       .insert({
         salon_id: targetSalonId || null,
-        barber_id: (barberId && barberId !== 'any') ? barberId : null,
+        barber_id: resolvedBarberId,
         service_id: service.id,
         client_name: 'زبون مباشر (Walk-in)',
         client_phone: '01000000000',
@@ -1973,7 +1993,9 @@ export async function getSalonAppointmentsAdmin(salonId) {
     });
 
     if (error) throw error;
-    return data || [];
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.appointments)) return data.appointments;
+    return [];
   } catch (err) {
     console.error('Error fetching salon appointments for inspection:', err);
     return [];

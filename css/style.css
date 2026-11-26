@@ -1197,6 +1197,39 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Settings Grid & Working Hours Responsive Styles */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.working-hours-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr 70px;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 480px) {
+  .working-hours-row {
+    grid-template-columns: 70px 1fr 1fr 65px;
+    gap: 6px;
+  }
+  .working-hours-row input[type="time"] {
+    padding: 6px 4px !important;
+    font-size: 0.82rem !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .working-hours-row {
+    grid-template-columns: 60px 1fr 1fr 55px;
+    gap: 4px;
+  }
+}
+
 /* Service Management and Switches */
 .service-manage-item {
   display: flex;

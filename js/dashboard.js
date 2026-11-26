@@ -1223,10 +1223,7 @@ function renderWorkingHoursEditor(workingHours) {
     const dayName = ARABIC_DAYS[i];
 
     const row = document.createElement('div');
-    row.style.display = 'grid';
-    row.style.gridTemplateColumns = '80px 1fr 1fr 70px';
-    row.style.gap = '8px';
-    row.style.alignItems = 'center';
+    row.className = 'working-hours-row';
 
     row.innerHTML = `
       <span style="font-weight: 700; font-size: 0.85rem;">${dayName}</span>

@@ -178,19 +178,6 @@ function initStoredClientInfo() {
   if (savedPhone) DOM.clientPhoneInput.value = savedPhone;
 }
 
-/**
- * Triggers session-guarded atomic visitor count in background
- */
-async function initVisitorCounter() {
-  try {
-    const updatedCount = await triggerVisitorCounter();
-    if (updatedCount !== null && DOM.viewsCount) {
-      DOM.viewsCount.textContent = Number(updatedCount).toLocaleString('ar-EG');
-    }
-  } catch (err) {
-    console.warn('Visitor counter background check:', err);
-  }
-}
 
 /**
  * Renders salon profile in DOM

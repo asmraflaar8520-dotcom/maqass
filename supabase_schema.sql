@@ -408,7 +408,7 @@ BEGIN
   SELECT is_blocked INTO v_blocked
   FROM blacklist
   WHERE (p_salon_id IS NULL OR salon_id = p_salon_id)
-    AND client_phone = v_sanitized
+    AND regexp_replace(regexp_replace(client_phone, '\s+', '', 'g'), '^(\+20|0020)', '0') = v_sanitized
   LIMIT 1;
 
   RETURN COALESCE(v_blocked, FALSE);

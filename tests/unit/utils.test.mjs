@@ -5,7 +5,8 @@ import {
   isValidEgyptianPhone,
   normalizePhoneForWhatsApp,
   getEgyptLocalTimeMinutes,
-  calculateAvailableSlots
+  calculateAvailableSlots,
+  generateWhatsAppLink
 } from '../../js/utils.js';
 
 describe('1. escapeHtml XSS Prevention', () => {
@@ -211,5 +212,45 @@ describe('5. calculateAvailableSlots Multi-Scenario Engine', () => {
       'any'
     );
     assert.deepEqual(slots, []);
+  });
+});
+
+describe('6. generateWhatsAppLink Message Templates', () => {
+  it('should generate valid client_to_salon link with all details', () => {
+    const link = generateWhatsAppLink({
+      clientPhone: '01012345678',
+      clientName: 'أحمد علي',
+      salonName: 'صالون مِقَصْ',
+      serviceName: 'قص شعر',
+      barberName: 'الأسطى محمود',
+      date: '2026-11-20',
+      time: '14:30:00',
+      type: 'client_to_salon'
+    });
+
+    assert.ok(link.startsWith('https://wa.me/201012345678?text='));
+    const decoded = decodeURIComponent(link.split('?text=')[1]);
+    assert.ok(decoded.includes('أحمد علي'));
+    assert.ok(decoded.includes('صالون مِقَصْ'));
+    assert.ok(decoded.includes('قص شعر'));
+    assert.ok(decoded.includes('الأسطى محمود'));
+    assert.ok(decoded.includes('02:30 م'));
+  });
+
+  it('should generate valid confirmation message for salon to client', () => {
+    const link = generateWhatsAppLink({
+      clientPhone: '01198765432',
+      clientName: 'كريم',
+      salonName: 'صالون مِقَصْ',
+      serviceName: 'تحديد لحية',
+      date: '2026-11-20',
+      time: '18:00:00',
+      type: 'confirmation'
+    });
+
+    assert.ok(link.startsWith('https://wa.me/201198765432?text='));
+    const decoded = decodeURIComponent(link.split('?text=')[1]);
+    assert.ok(decoded.includes('يا هلا يا كريم'));
+    assert.ok(decoded.includes('تحديد لحية'));
   });
 });

@@ -45,10 +45,32 @@
       margin-bottom: 24px;
     }
 
+    @media (max-width: 640px) {
+      .admin-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        padding: 14px 16px;
+      }
+      .admin-header > div:last-child {
+        justify-content: flex-end;
+      }
+      .search-filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .search-filter-bar > div:first-child {
+        max-width: 100% !important;
+      }
+      .search-filter-bar > div:last-child {
+        flex-wrap: wrap;
+      }
+    }
+
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
       margin-bottom: 24px;
     }
 
@@ -365,6 +387,6 @@
 
   <div id="toast-container" class="toast-container"></div>
 
-  <script type="module" src="js/superadmin.js?v=3.0.0"></script>
+  <script type="module" src="js/superadmin.js"></script>
 </body>
 </html>
